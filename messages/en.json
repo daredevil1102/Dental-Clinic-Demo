@@ -40,6 +40,12 @@
     "menuSettings": "Settings",
     "menuSignOut": "Sign out"
   },
+  "roles": {
+    "owner": "Owner",
+    "admin": "Admin",
+    "agent": "Agent",
+    "viewer": "Viewer"
+  },
   "Header": {
     "dashboard": "Dashboard",
     "inbox": "Inbox",

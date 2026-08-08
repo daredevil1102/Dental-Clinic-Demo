@@ -80,6 +80,18 @@ interface WhatsAppWebhookEntry {
         status: string
         timestamp: string
         recipient_id: string
+        // Meta attaches this on `status: 'failed'`. Previously absent
+        // from this type, so the reason a message failed was silently
+        // discarded — the inbox showed a red ✗ with no explanation
+        // anywhere in the logs or the DB. `error_data.details` is the
+        // most specific string Meta gives you (e.g. the actual reason
+        // behind a 131042 billing block).
+        errors?: Array<{
+          code: number
+          title?: string
+          message?: string
+          error_data?: { details?: string }
+        }>
       }>
     }
     field: string
@@ -354,7 +366,34 @@ async function handleStatusUpdate(status: {
   status: string
   timestamp: string
   recipient_id: string
+  errors?: Array<{
+    code: number
+    title?: string
+    message?: string
+    error_data?: { details?: string }
+  }>
 }) {
+  // 0) Surface WHY a message failed. Meta only attaches `errors` on
+  //    `status: 'failed'`; without this the inbox renders a red ✗ and
+  //    the reason is lost forever. Logged loudly and in full — the
+  //    common codes here are account-level (131042 billing/eligibility,
+  //    131049 undeliverable, 131047 outside the 24h window) and none of
+  //    them are diagnosable from the status value alone.
+  if (status.status === 'failed' && status.errors?.length) {
+    for (const e of status.errors) {
+      console.error(
+        `[whatsapp] message ${status.id} to ${status.recipient_id} FAILED — ` +
+          `code=${e.code} title="${e.title ?? ''}" ` +
+          `details="${e.error_data?.details ?? e.message ?? ''}"`,
+      )
+    }
+  } else if (status.status === 'failed') {
+    console.error(
+      `[whatsapp] message ${status.id} to ${status.recipient_id} FAILED — ` +
+        `Meta sent no error detail.`,
+    )
+  }
+
   // 1) Mirror onto messages (legacy behavior) — Meta's status values
   //    already match the CHECK constraint on messages.status. No
   //    `.select()`: message_id is NOT unique (migration 009 — Meta ids

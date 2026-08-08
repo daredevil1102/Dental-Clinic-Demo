@@ -40,6 +40,12 @@
     "menuSettings": "설정",
     "menuSignOut": "로그아웃"
   },
+  "roles": {
+    "owner": "소유자",
+    "admin": "관리자",
+    "agent": "상담원",
+    "viewer": "뷰어"
+  },
   "Header": {
     "dashboard": "대시보드",
     "inbox": "인박스",
