@@ -8,6 +8,23 @@ import {
   type ProviderArgs,
 } from './shared'
 
+// OpenRouter note (Phase 1 decision — see docs/phase-1/P1-8-openrouter.md):
+// We deliberately did NOT add OpenRouter as a first-class provider. The
+// `AiProvider` type stays 'openai' | 'anthropic'. Instead, OpenRouter is
+// used via this OPENAI_BASE_URL override, e.g.
+//   OPENAI_BASE_URL=https://openrouter.ai/api/v1/chat/completions
+//
+// Consequences to be aware of (this override is GLOBAL, not per-workspace):
+//   1. It reroutes EVERY account that selects the "OpenAI" provider through
+//      OpenRouter. A client cannot reach real api.openai.com while it's set,
+//      and a real OpenAI key pasted under "OpenAI" will fail (OpenRouter
+//      only accepts OpenRouter keys).
+//   2. Model IDs must be OpenRouter SLUGS, not bare OpenAI names — e.g.
+//      `openai/gpt-4o-mini`, not `gpt-4o-mini`. See AI_PROVIDER_DEFAULT_MODEL
+//      in ../defaults.ts, whose default is a bare OpenAI id and must be
+//      overridden in the settings form when this base URL points at OpenRouter.
+// This is acceptable for the single-operator pilot; revisit (build real P1-8)
+// before onboarding clients who need to choose their own provider.
 const OPENAI_URL =
   process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1/chat/completions'
 

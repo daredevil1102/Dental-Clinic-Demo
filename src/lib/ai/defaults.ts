@@ -10,6 +10,11 @@ import type { AiProvider } from './types'
  * BYO-key forker may want a cheaper/newer one — so these are only the
  * starting point, never a hard allow-list.
  */
+// NOTE on OpenRouter: when OPENAI_BASE_URL points at OpenRouter (see
+// providers/openai.ts), the "openai" default below is WRONG for that endpoint —
+// OpenRouter needs a namespaced slug (e.g. `openai/gpt-4o-mini`). The recommended
+// pilot model is gpt-4o-mini, entered as `openai/gpt-4o-mini` in Settings → AI.
+// These remain editable free text, so no hard-coded switch is needed here.
 export const AI_PROVIDER_DEFAULT_MODEL: Record<AiProvider, string> = {
   openai: 'gpt-5.4-mini',
   anthropic: 'claude-haiku-4-5-20251001',
