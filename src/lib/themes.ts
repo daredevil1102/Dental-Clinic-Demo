@@ -23,7 +23,11 @@ export const THEME_IDS = [
 
 export type ThemeId = (typeof THEME_IDS)[number];
 
-export const DEFAULT_THEME: ThemeId = "violet";
+// Default accent for the ConnectsWA rebrand (P1-1): the corporate-blue
+// "cobalt" theme rather than the template's original violet. All accents
+// remain user-selectable in Settings; this only sets the out-of-the-box
+// look. The fixed brand mark (favicon/BrandMark) uses a matching blue.
+export const DEFAULT_THEME: ThemeId = "cobalt";
 
 export const STORAGE_KEY = "wacrm.theme";
 

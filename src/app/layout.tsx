@@ -21,11 +21,12 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
+  applicationName: "ConnectsWA",
   title: {
-    default: "wacrm",
-    template: "%s — wacrm",
+    default: "ConnectsWA",
+    template: "%s — ConnectsWA",
   },
-  description: "Self-hostable CRM template for WhatsApp.",
+  description: "WhatsApp CRM — shared team inbox, contacts, pipelines, and broadcasts.",
   robots: {
     index: false,
     follow: false,
