@@ -1,11 +1,30 @@
 # P1-7 — PWA Level 1 (installable, native feel)
 
-- **Status:** In review (implemented; awaiting owner install test + commit review)
+- **Status:** Done (partial) — installable with correct brand icon; true
+  standalone/fullscreen launch is **deferred** (needs a service worker, see
+  BACKLOG **B7**).
 - **Effort:** ~0.5 day build (see note on why it feels bigger)
 - **Branch:** `feat/p1-7-pwa`
 - **Last updated:** 2026-08-09
 - **Brand inputs locked:** name **ConnectsWA**, mark = shared `<BrandMark>`
   (bubble + upward arrow), icon background `#2563EB`.
+
+## On-device test result (2026-08-09, Android Chrome)
+Tested by installing to a real home screen. **Two learnings:**
+1. **ngrok free tier can't be used to test PWA install.** Its interstitial
+   ("You are about to visit…") is served on the top-level navigation to browser
+   user-agents. The phone gets past it (cookie), but Google's WebAPK builder
+   fetches the start_url fresh + cookieless, hits the warning page, and falls
+   back to a browser shortcut with a wrong/fallback icon. Verified via curl:
+   assets pass, but `GET /` with a browser UA returns `ERR_NGROK`. **Use a
+   clean origin** — a Cloudflare quick tunnel (`cloudflared tunnel --url
+   http://localhost:3000`, no interstitial) or the real deployed domain.
+2. **On a clean origin the icon is correct**, but the install is still a
+   **browser shortcut, not a standalone WebAPK** — it opens in-browser with the
+   URL bar, not fullscreen. On this Chrome, a **service worker is required** for
+   a true standalone install. Manifest + icons alone give a nice icon + a
+   shortcut. Deferred to **B7** (the earlier assumption that modern Chrome
+   installs manifest-only PWAs standalone was wrong for this device).
 
 ## 0. Implementation notes (what shipped)
 All icons are **code-generated** via next/og — no static PNGs, no new deps.
@@ -21,7 +40,8 @@ All icons are **code-generated** via next/og — no static PNGs, no new deps.
 - **Runtime-verified:** booted `next start`, every route returns HTTP 200
   `image/png` (683 B–10 KB) and `/manifest.webmanifest` serves valid JSON —
   so Satori renders the multi-path glyph, not just compiles.
-- **Not done (owner):** real device install test on Android + iOS.
+- **Device test done (Android):** see "On-device test result" above — icon ✅,
+  standalone ❌ (needs B7). iOS install test still pending (owner).
 
 ## 1. Context & problem
 The app is browser-only today. There is **no web-app manifest** (confirmed:

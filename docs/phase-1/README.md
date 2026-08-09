@@ -42,5 +42,8 @@ code (manifest, routing, metadata, server actions), read the relevant guide in
 | P1-9 | n8n wiring (wacrm side) | _tbd_ | — | ~2–5 d |
 | P1-10 | Manual WhatsApp onboarding | _tbd_ | — | ~1–2 d |
 
+**Testing:** [TEST-PLAN.md](TEST-PLAN.md) — follow-along functionality + UAT
+tests (currently P1-1 and P1-7). **Backlog:** [BACKLOG.md](BACKLOG.md).
+
 Source requirements: `../../../wacrm-features-requirements.md` (currently outside
 the repo; see freeze runbook note about un-versioned parent-folder files).
