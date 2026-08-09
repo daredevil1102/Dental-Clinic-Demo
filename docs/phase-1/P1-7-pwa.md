@@ -1,11 +1,27 @@
 # P1-7 — PWA Level 1 (installable, native feel)
 
-- **Status:** Approved — ready to implement (brand name/colour confirmed 2026-08-09)
+- **Status:** In review (implemented; awaiting owner install test + commit review)
 - **Effort:** ~0.5 day build (see note on why it feels bigger)
 - **Branch:** `feat/p1-7-pwa`
 - **Last updated:** 2026-08-09
 - **Brand inputs locked:** name **ConnectsWA**, mark = shared `<BrandMark>`
-  (bubble + upward arrow), icon background `#2563EB`. Icons can be baked now.
+  (bubble + upward arrow), icon background `#2563EB`.
+
+## 0. Implementation notes (what shipped)
+All icons are **code-generated** via next/og — no static PNGs, no new deps.
+- New shared raster helper `src/lib/brand/brand-icon.tsx` (`renderBrandIcon`)
+  renders the mark at any size; mirrors the DOM `<BrandMark>` glyph.
+- `src/app/icon.tsx` refactored to use it (favicon 32); new
+  `src/app/apple-icon.tsx` (180, full-bleed for iOS).
+- Manifest icon routes: `src/app/icons/pwa-192`, `pwa-512`, `maskable`
+  (512, full-bleed + smaller glyph for Android adaptive masking).
+- `src/app/manifest.ts` (name/short_name ConnectsWA, `display: standalone`,
+  bg/theme `#020617` to match the dark shell, the three icons).
+- `src/app/layout.tsx`: added `appleWebApp` metadata (iOS fullscreen).
+- **Runtime-verified:** booted `next start`, every route returns HTTP 200
+  `image/png` (683 B–10 KB) and `/manifest.webmanifest` serves valid JSON —
+  so Satori renders the multi-path glyph, not just compiles.
+- **Not done (owner):** real device install test on Android + iOS.
 
 ## 1. Context & problem
 The app is browser-only today. There is **no web-app manifest** (confirmed:
@@ -46,13 +62,13 @@ Anticipated changes (verify against the guide):
   placeholders and redo icons.
 
 ## 4. Task breakdown
-- [ ] Read Next manifest/metadata guide in `node_modules/next/dist/docs/`.
-- [ ] Confirm brand inputs from P1-1 (name, color, mark).
-- [ ] Generate icon set (192, 512, maskable 512, apple-touch 180).
-- [ ] Add `src/app/manifest.ts`.
-- [ ] Add apple-web-app + theme-color metadata in `layout.tsx`.
-- [ ] `npm run typecheck && npm run lint && npm run build`.
-- [ ] Manual install test: Android Chrome + iOS Safari.
+- [x] Read Next manifest/metadata guide in `node_modules/next/dist/docs/`.
+- [x] Confirm brand inputs from P1-1 (name, color, mark).
+- [x] Generate icon set (192, 512, maskable 512, apple-touch 180) — code-gen.
+- [x] Add `src/app/manifest.ts`.
+- [x] Add apple-web-app metadata in `layout.tsx` (theme-color already set).
+- [x] `npm run typecheck && npm run lint && npm run build` (+ runtime fetch check).
+- [ ] **Manual install test: Android Chrome + iOS Safari** (owner).
 
 ## 5. Testing & acceptance
 - **Automated:** build passes; Lighthouse "Installable" check green.

@@ -22,6 +22,14 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   applicationName: "ConnectsWA",
+  // iOS home-screen launch: run fullscreen with our name/status bar when
+  // installed (P1-7 PWA Level 1). The manifest (app/manifest.ts) covers
+  // Android; these tags are the iOS-specific half.
+  appleWebApp: {
+    capable: true,
+    title: "ConnectsWA",
+    statusBarStyle: "black-translucent",
+  },
   title: {
     default: "ConnectsWA",
     template: "%s — ConnectsWA",
