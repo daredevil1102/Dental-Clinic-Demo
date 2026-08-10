@@ -187,7 +187,11 @@ export async function POST(request: Request) {
   const rawBody = await request.text()
   const signature = request.headers.get('x-hub-signature-256')
 
-  if (!verifyMetaWebhookSignature(rawBody, signature)) {
+  // 8.6 replaces this env-var secret with the per-connection App Secret
+  // resolved from the payload (decrypt(config.app_secret), else the env
+  // fallback). Until then, behaviour is identical to reading the env
+  // internally, as the helper used to.
+  if (!verifyMetaWebhookSignature(rawBody, signature, process.env.META_APP_SECRET)) {
     // 401 (not 200) — we want Meta's delivery dashboard to show failures
     // loudly if a misconfiguration causes signatures to stop matching,
     // rather than silently eating events.

@@ -12,22 +12,29 @@ import crypto from 'node:crypto'
  *   https://developers.facebook.com/docs/graph-api/webhooks/getting-started#verify-payloads
  *
  * Contract:
- *   `META_APP_SECRET` is **required**. If it's missing we fail closed —
- *   every request is rejected until the operator configures the
- *   secret. A previous version fell open with a warning log, which is
- *   unsafe for a public template: anyone who forgets the env var would
- *   be running a fully spoofable webhook.
+ *   The `secret` is supplied by the caller, **not** read from the
+ *   environment here. Each manual client owns their own Meta app and
+ *   therefore their own App Secret, so the webhook route resolves the
+ *   connection first and passes `decrypt(config.app_secret)` (falling
+ *   back to `META_APP_SECRET` for grandfathered rows). The provider route
+ *   (`claude-02`) passes the single deployment-wide provider secret. See
+ *   `claude-01` §4.3.
+ *
+ *   The secret is **required**. If it's empty/absent we fail closed —
+ *   the request is rejected. A previous version fell open with a warning
+ *   log, which is unsafe for a public template: anyone who forgets the
+ *   env var would be running a fully spoofable webhook.
  */
 export function verifyMetaWebhookSignature(
   rawBody: string,
   signatureHeader: string | null,
+  secret: string | null | undefined,
 ): boolean {
-  const secret = process.env.META_APP_SECRET
   if (!secret) {
     console.error(
-      '[webhook] META_APP_SECRET is not set — rejecting request. ' +
-        'Configure the env var (Meta → App Settings → Basic → App Secret) ' +
-        'to enable signature verification.',
+      '[webhook] no App Secret available for this connection — rejecting ' +
+        'request (fail closed). Manual: set the client App Secret ' +
+        '(Meta → App Settings → Basic → App Secret) or META_APP_SECRET.',
     )
     return false
   }
