@@ -28,7 +28,9 @@ interface WebhookState {
   conversation: Record<string, unknown> | null
   existingContact: Record<string, unknown> | null
   broadcastRecipient: Record<string, unknown> | null
-  statusMsgRow: Record<string, unknown> | null
+  // Account-scoped `messages` rows returned by handleStatusUpdate's scoped
+  // lookup (§4.4): the rows in THIS account carrying the status's message_id.
+  ownMessageRows: Array<Record<string, unknown>>
   priorCustomerMsgCount: number
 }
 
@@ -48,7 +50,7 @@ const h = vi.hoisted(() => {
     state.conversation = null
     state.existingContact = null
     state.broadcastRecipient = null
-    state.statusMsgRow = null
+    state.ownMessageRows = []
     state.priorCustomerMsgCount = 0
     calls.inserts = {}
     calls.updates = {}
@@ -87,7 +89,10 @@ function makeAdminClient() {
       return b
     }
     b.neq = chain
-    b.in = chain
+    b.in = (col: string, values: unknown) => {
+      ctx.filters[`${col}__in`] = values
+      return b
+    }
     b.order = chain
     b.limit = chain
     b.insert = (payload: Record<string, unknown>) => {
@@ -133,7 +138,8 @@ function makeAdminClient() {
           return { data: h.state.broadcastRecipient, error: null }
         case 'messages':
           if (ctx.count) return { count: h.state.priorCustomerMsgCount, error: null }
-          return { data: h.state.statusMsgRow, error: null }
+          // The account-scoped lookup in handleStatusUpdate.
+          return { data: h.state.ownMessageRows, error: null }
         default:
           return { data: null, error: null }
       }
@@ -439,8 +445,23 @@ describe('POST /api/whatsapp/webhook — tenant resolution by phone_number_id', 
   })
 })
 
-describe('POST /api/whatsapp/webhook — status updates', () => {
-  it('mirrors a delivered status onto messages (by message_id) and advances the broadcast recipient', async () => {
+// A status change now resolves its connection first (by phone_number_id),
+// and the messages mirror is scoped to that account's rows (§4.4 / 8.5).
+const STATUS_CONFIG = {
+  id: 'cfg-s',
+  account_id: 'acct-1',
+  user_id: 'user-1',
+  phone_number_id: 'PNID-1',
+  access_token: 'enc',
+}
+
+describe('POST /api/whatsapp/webhook — status updates (scoped, §4.4)', () => {
+  beforeEach(() => {
+    h.state.configs = [STATUS_CONFIG]
+    h.state.ownMessageRows = [{ id: 'msg-A', conversation_id: 'conv-1' }]
+  })
+
+  it('mirrors a delivered status onto the account\'s own rows (scoped by id, not message_id) and advances the broadcast recipient', async () => {
     h.state.broadcastRecipient = { id: 'br-1', status: 'sent' }
     const raw = JSON.stringify(statusBody({ status: 'delivered' }))
     const res = await postRequest(raw, sign(raw))
@@ -450,13 +471,33 @@ describe('POST /api/whatsapp/webhook — status updates', () => {
     const msgUpdates = h.calls.updates.messages ?? []
     expect(msgUpdates).toHaveLength(1)
     expect(msgUpdates[0].payload).toMatchObject({ status: 'delivered' })
-    // Characterizes the current UNSCOPED update — filtered by message_id only.
-    expect(msgUpdates[0].filters).toEqual({ message_id: 'wamid.S' })
+    // The update is bounded to this account's own row ids — NOT a bare
+    // message_id filter that would cross tenants (claude-00 invariant 1).
+    expect(msgUpdates[0].filters).toEqual({ id__in: ['msg-A'] })
+    expect(msgUpdates[0].filters).not.toHaveProperty('message_id')
 
     const brUpdates = h.calls.updates.broadcast_recipients ?? []
     expect(brUpdates).toHaveLength(1)
     expect(brUpdates[0].payload).toMatchObject({ status: 'delivered' })
     expect(brUpdates[0].payload.delivered_at).toBeTruthy()
+  })
+
+  it('touches no message rows when the resolved account owns none with that message_id', async () => {
+    h.state.ownMessageRows = []
+    const raw = JSON.stringify(statusBody({ status: 'delivered' }))
+    await postRequest(raw, sign(raw))
+    await flushAfter()
+    expect(h.calls.updates.messages).toBeUndefined()
+  })
+
+  it('drops a status whose connection cannot be resolved (no write at all)', async () => {
+    h.state.configs = []
+    const raw = JSON.stringify(statusBody({ status: 'delivered' }))
+    const res = await postRequest(raw, sign(raw))
+    expect(res.status).toBe(200)
+    await flushAfter()
+    expect(h.calls.updates.messages).toBeUndefined()
+    expect(h.calls.updates.broadcast_recipients).toBeUndefined()
   })
 
   it('stamps sent_at on a sent status from pending', async () => {
@@ -495,7 +536,8 @@ describe('POST /api/whatsapp/webhook — status updates', () => {
     await postRequest(raw, sign(raw))
     await flushAfter()
 
-    // messages is mirrored unconditionally (no ladder guard on that table)...
+    // messages is mirrored unconditionally on the account's own rows (no
+    // ladder guard on that table)...
     expect(h.calls.updates.messages ?? []).toHaveLength(1)
     // ...but the broadcast recipient is NOT regressed.
     expect(h.calls.updates.broadcast_recipients).toBeUndefined()

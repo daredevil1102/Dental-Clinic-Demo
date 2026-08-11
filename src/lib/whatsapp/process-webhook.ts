@@ -11,6 +11,8 @@ import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
+import { resolveConnectionForChange } from '@/lib/whatsapp/resolve-connection'
+import type { WhatsAppConfig } from '@/types'
 
 // ---------------------------------------------------------------------------
 // Inbound webhook processing, extracted verbatim from
@@ -99,95 +101,87 @@ export interface WhatsAppWebhookEntry {
   }>
 }
 
+/** One element of `entry.changes` — the unit of work (§4.4.1). */
+export type WhatsAppChange = WhatsAppWebhookEntry['changes'][number]
+
 export async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
   if (!body.entry) return
 
+  // The unit of work is a *change*, not an entry: `phone_number_id` lives on
+  // change.value.metadata, and template events resolve by entry.id. Resolve
+  // each change to its own connection, then dispatch. A change that resolves
+  // to no connection (unknown / ambiguous) is skipped and logged, never
+  // aborting its siblings (§4.4.1). claude-02's provider route reuses
+  // `resolveConnectionForChange`; the per-route trust rule (which connection
+  // a change is *allowed* to resolve to) is added at the route boundary in
+  // §4.1.2 — here every resolved change is processed.
   for (const entry of body.entry) {
     for (const change of entry.changes) {
-      // Template-lifecycle events (status / quality / components
-      // updates from Meta) come in on a different change.field and
-      // have a different value shape — route them through the
-      // dedicated handler. Skip the messaging branches below so we
-      // don't try to read message-shaped fields off a template event.
-      if (isTemplateWebhookField(change.field)) {
-        await handleTemplateWebhookChange(
-          { field: change.field, value: change.value as unknown },
-          supabaseAdmin(),
-        )
-        continue
-      }
-
-      const value = change.value
-
-      // Handle status updates
-      if (value.statuses) {
-        for (const status of value.statuses) {
-          await handleStatusUpdate(status)
-        }
-      }
-
-      // Handle incoming messages
-      if (!value.messages || !value.contacts) continue
-
-      const phoneNumberId = value.metadata.phone_number_id
-
-      // Find user's config by phone_number_id. `.single()` returns
-      // PGRST116 for both 0 rows AND ≥2 rows — distinguish them so
-      // operators see the real cause in logs. ≥2 rows shouldn't happen
-      // post-migration 013 (UNIQUE constraint), but a row created
-      // before the constraint, or a race, would still surface here.
-      const { data: configRows, error: configError } = await supabaseAdmin()
-        .from('whatsapp_config')
-        .select('*')
-        .eq('phone_number_id', phoneNumberId)
-
-      if (configError) {
-        console.error(
-          'Error fetching whatsapp_config for phone_number_id:',
-          phoneNumberId,
-          configError
-        )
-        continue
-      }
-
-      if (!configRows || configRows.length === 0) {
-        console.error('No config found for phone_number_id:', phoneNumberId)
-        continue
-      }
-
-      if (configRows.length > 1) {
-        console.error(
-          `Multiple configs (${configRows.length}) found for phone_number_id:`,
-          phoneNumberId,
-          '— inbound message dropped. Resolve duplicates so each number maps to a single account.',
-          'Account owners:',
-          configRows.map((r: { account_id: string; user_id: string }) => `${r.account_id} (admin ${r.user_id})`)
-        )
-        continue
-      }
-
-      const config = configRows[0]
-
-      const decryptedAccessToken = decrypt(config.access_token)
-
-      for (let i = 0; i < value.messages.length; i++) {
-        const message = value.messages[i]
-        const contact = value.contacts[i] || value.contacts[0]
-
-        await processMessage(
-          message,
-          contact,
-          // Tenancy — drives every contact / conversation lookup
-          // and the engines' active-row dispatch.
-          config.account_id,
-          // Audit / sender-of-record — used as the user_id on row
-          // inserts that need it for NOT NULL FK compliance. Always
-          // the admin who saved the WhatsApp config.
-          config.user_id,
-          decryptedAccessToken
-        )
-      }
+      const resolution = await resolveConnectionForChange(
+        entry,
+        change,
+        supabaseAdmin(),
+      )
+      if (!resolution.ok) continue
+      await processWebhookChange(change, resolution.config)
     }
+  }
+}
+
+/**
+ * Process a single, already-resolved change against its connection. Every
+ * write is scoped to `config.account_id`, which fixes the cross-tenant
+ * status write (`claude-00` invariant 1): `message_id` is not unique across
+ * numbers (migration 009), so a status mirror keyed on it alone would touch
+ * another tenant's rows.
+ */
+export async function processWebhookChange(
+  change: WhatsAppChange,
+  config: WhatsAppConfig,
+): Promise<void> {
+  // Template-lifecycle events (status / quality / components updates from
+  // Meta) come in on a different change.field and have a different value
+  // shape — route them through the dedicated handler. Skip the messaging
+  // branches below so we don't read message-shaped fields off a template
+  // event.
+  if (isTemplateWebhookField(change.field)) {
+    await handleTemplateWebhookChange(
+      { field: change.field, value: change.value as unknown },
+      supabaseAdmin(),
+    )
+    return
+  }
+
+  const value = change.value
+
+  // Handle status updates — scoped to the resolved account.
+  if (value.statuses) {
+    for (const status of value.statuses) {
+      await handleStatusUpdate(status, config.account_id)
+    }
+  }
+
+  // Handle incoming messages
+  if (!value.messages || !value.contacts) return
+
+  const decryptedAccessToken = decrypt(config.access_token)
+
+  for (let i = 0; i < value.messages.length; i++) {
+    const message = value.messages[i]
+    const contact = value.contacts[i] || value.contacts[0]
+
+    await processMessage(
+      message,
+      contact,
+      // Tenancy — drives every contact / conversation lookup
+      // and the engines' active-row dispatch.
+      config.account_id,
+      // Audit / sender-of-record — used as the user_id on row
+      // inserts that need it for NOT NULL FK compliance. Always
+      // the admin who saved the WhatsApp config.
+      config.user_id,
+      decryptedAccessToken
+    )
   }
 }
 
@@ -233,18 +227,25 @@ function isValidStatusTransition(current: string, incoming: string): boolean {
   return ii > ci
 }
 
-async function handleStatusUpdate(status: {
-  id: string
-  status: string
-  timestamp: string
-  recipient_id: string
-  errors?: Array<{
-    code: number
-    title?: string
-    message?: string
-    error_data?: { details?: string }
-  }>
-}) {
+async function handleStatusUpdate(
+  status: {
+    id: string
+    status: string
+    timestamp: string
+    recipient_id: string
+    errors?: Array<{
+      code: number
+      title?: string
+      message?: string
+      error_data?: { details?: string }
+    }>
+  },
+  // The account this status was verified/resolved for. `messages` has no
+  // account_id of its own, so this is the tenant scope for the mirror
+  // below — without it, `message_id` (non-unique, migration 009) would
+  // let one client's status webhook rewrite another client's message.
+  accountId: string,
+) {
   // 0) Surface WHY a message failed. Meta only attaches `errors` on
   //    `status: 'failed'`; without this the inbox renders a red ✗ and
   //    the reason is lost forever. Logged loudly and in full — the
@@ -266,18 +267,31 @@ async function handleStatusUpdate(status: {
     )
   }
 
-  // 1) Mirror onto messages (legacy behavior) — Meta's status values
-  //    already match the CHECK constraint on messages.status. No
-  //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
-  //    repeat across numbers), so this updates 0..N rows and must not
-  //    assume a single row.
-  const { error: msgErr } = await supabaseAdmin()
+  // 1) Mirror onto messages — SCOPED to this account (§4.4). `messages`
+  //    has no account_id, so scope through the conversation: look up this
+  //    account's message rows carrying this (non-unique) message_id, then
+  //    update exactly those by primary key. `conversations.account_id` is
+  //    immutable, so there is no race between the lookup and the update.
+  //    Still 0..N rows — now bounded to one tenant. A single joined UPDATE
+  //    is ideal but the JS client doesn't express it cleanly (§4.4.2).
+  const { data: ownRows, error: lookupErr } = await supabaseAdmin()
     .from('messages')
-    .update({ status: status.status })
+    .select('id, conversation_id, conversations!inner(account_id)')
     .eq('message_id', status.id)
+    .eq('conversations.account_id', accountId)
 
-  if (msgErr) {
-    console.error('Error updating message status:', msgErr)
+  if (lookupErr) {
+    console.error('Error looking up messages for status update:', lookupErr)
+  } else if (ownRows && ownRows.length > 0) {
+    const ids = ownRows.map((r: { id: string }) => r.id)
+    const { error: msgErr } = await supabaseAdmin()
+      .from('messages')
+      .update({ status: status.status })
+      .in('id', ids)
+
+    if (msgErr) {
+      console.error('Error updating message status:', msgErr)
+    }
   }
 
   // Webhook fan-out for this status change happens at the END of this
@@ -319,32 +333,22 @@ async function handleStatusUpdate(status: {
     }
   }
 
-  // 3) Webhook fan-out for messages we store (inbox / API sends).
-  //    Runs last so a slow subscriber can't delay the mirrors above.
-  //    Bounded to one row (message_id isn't unique) purely to resolve
-  //    the owning account for delivery.
-  const { data: msgRow } = await supabaseAdmin()
-    .from('messages')
-    .select('conversation_id, conversations(account_id)')
-    .eq('message_id', status.id)
-    .limit(1)
-    .maybeSingle()
-
-  if (msgRow) {
-    const conv = msgRow.conversations as { account_id: string } | null
-    const accountId = conv?.account_id
-    if (accountId) {
-      await dispatchWebhookEvent(
-        supabaseAdmin(),
-        accountId,
-        'message.status_updated',
-        {
-          whatsapp_message_id: status.id,
-          conversation_id: msgRow.conversation_id,
-          status: status.status,
-        }
-      )
-    }
+  // 3) Webhook fan-out for messages we store (inbox / API sends). Runs
+  //    last so a slow subscriber can't delay the mirrors above. The owning
+  //    account is the one this status was resolved for (passed in), and
+  //    step 1 already fetched this account's matching rows — reuse them
+  //    rather than re-querying cross-tenant.
+  if (ownRows && ownRows.length > 0) {
+    await dispatchWebhookEvent(
+      supabaseAdmin(),
+      accountId,
+      'message.status_updated',
+      {
+        whatsapp_message_id: status.id,
+        conversation_id: (ownRows[0] as { conversation_id: string }).conversation_id,
+        status: status.status,
+      }
+    )
   }
 }
 

@@ -268,13 +268,32 @@ export interface MessageReaction {
 
 export interface WhatsAppConfig {
   id: string;
+  /**
+   * Account tenancy key — every connection belongs to exactly one
+   * account (`UNIQUE(account_id)`, migration 017). The inbound webhook
+   * resolves this from the payload and scopes every write to it.
+   */
+  account_id: string;
   user_id: string;
   phone_number_id: string;
   waba_id?: string;
   access_token: string;
   verify_token?: string;
+  /**
+   * Per-client Meta App Secret (encrypted at rest), migration 037. NULL
+   * means "verify inbound with the deployment-wide META_APP_SECRET" — the
+   * grandfathered manual connection. Required for every NEW connection at
+   * the API layer (claude-01 §5.1.1). Never returned to the browser.
+   */
+  app_secret?: string;
   status: 'connected' | 'disconnected';
   connected_at?: string;
+  /**
+   * Best-effort timestamp of the last successfully-persisted inbound
+   * message for this connection (migration 037). Surfaced on the settings
+   * card so a silently dead connection is visible without the database.
+   */
+  last_inbound_at?: string;
   /**
    * Set when POST /{phone_number_id}/register last succeeded. NULL
    * means the number was saved but never actually subscribed for
