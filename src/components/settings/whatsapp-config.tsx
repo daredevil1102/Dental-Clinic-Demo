@@ -103,9 +103,21 @@ export function WhatsAppConfig() {
       // account sees the same saved configuration. UNIQUE(account_id)
       // on the table guarantees the .maybeSingle() return type
       // remains accurate.
+      // Explicit safe-column list — never `*` (P1-10 §6.2b). `*` shipped
+      // access_token / verify_token ciphertext to every workspace member's
+      // browser, and would ship app_secret the moment migration 037 landed.
+      // The database now refuses those columns to `authenticated` anyway
+      // (§6.2a), so selecting them here would fail the whole query rather
+      // than silently over-fetch. Safe to narrow: the credential fields are
+      // never read below — the form shows a fixed mask and requires a
+      // complete replacement value. claude-02 adds connection_method and
+      // business_id.
       const { data, error } = await supabase
         .from('whatsapp_config')
-        .select('*')
+        // Kept as ONE string literal: supabase-js parses the select at the
+        // type level, and a concatenated expression degrades the row type to
+        // GenericStringError.
+        .select('id, account_id, phone_number_id, waba_id, status, connected_at, registered_at, subscribed_apps_at, last_registration_error, last_inbound_at, created_at, updated_at')
         .eq('account_id', acctId)
         .maybeSingle();
 
