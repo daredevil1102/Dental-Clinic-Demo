@@ -262,7 +262,7 @@ export async function POST(request: Request) {
     // burn a Meta round trip.
     const { data: existing } = await supabase
       .from('whatsapp_config')
-      .select('id, registered_at, phone_number_id')
+      .select('id, registered_at, phone_number_id, status, connected_at')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -396,17 +396,35 @@ export async function POST(request: Request) {
     // Persist everything in one shot. If /register failed we still
     // store the credentials and the error so the UI can guide the
     // user through a retry.
+    // Bug 1 — never downgrade a live connection (§5.2, claude-00 invariant 5).
+    // A transient /register failure while re-saving a WORKING connection used
+    // to write status:'disconnected' + null timestamps, taking that client
+    // offline because Meta had a moment. Preserve the live state and record
+    // only the error. Requires the SAME number: a genuinely new connection, or
+    // one being pointed at a different number, may still be written
+    // disconnected — there is no working connection to protect in those cases.
+    const preserveLiveConnection =
+      !!registrationError &&
+      !!existing &&
+      existing.phone_number_id === phone_number_id &&
+      existing.status === 'connected'
+
     const baseRow: Record<string, unknown> = {
       phone_number_id,
       waba_id: waba_id || null,
       access_token: encryptedAccessToken,
       verify_token: encryptedVerifyToken,
-      status: registrationError ? 'disconnected' : 'connected',
-      connected_at: registrationError ? null : new Date().toISOString(),
-      registered_at: registrationError ? null : registeredAt,
       subscribed_apps_at: subscribedAppsAt ?? null,
       last_registration_error: registrationError,
       updated_at: new Date().toISOString(),
+    }
+
+    // Omit the connection-state columns entirely when preserving, so the
+    // stored values survive untouched rather than being rewritten.
+    if (!preserveLiveConnection) {
+      baseRow.status = registrationError ? 'disconnected' : 'connected'
+      baseRow.connected_at = registrationError ? null : new Date().toISOString()
+      baseRow.registered_at = registrationError ? null : registeredAt
     }
 
     // Only write app_secret when one was actually submitted. Omitting the key

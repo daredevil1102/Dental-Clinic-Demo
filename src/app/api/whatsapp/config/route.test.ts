@@ -426,14 +426,21 @@ describe('POST /api/whatsapp/config — cross-account conflict', () => {
   })
 })
 
-describe('POST /api/whatsapp/config — Bug 1: registration error downgrades even a live connection', () => {
-  it('writes status=disconnected with null timestamps on a registration error (CURRENT behaviour)', async () => {
-    // An existing, already-registered connection for the same number — i.e. a
-    // live client re-saving with a fresh PIN while Meta is having a moment.
+// ---------------------------------------------------------------------------
+// Bug 1 (§5.2) — FIXED at 8.8. These assertions previously documented the bug
+// (a live connection downgraded to 'disconnected' on any registration error);
+// they now assert the guard, changed in the same commit as the behaviour.
+// ---------------------------------------------------------------------------
+describe('POST /api/whatsapp/config — no-downgrade guard (§5.2)', () => {
+  it('preserves a live connection on a registration error, recording only the error', async () => {
+    // An existing, already-registered, CONNECTED row for the same number —
+    // i.e. a live client re-saving with a fresh PIN while Meta has a moment.
     h.state.existing = {
       id: 'cfg-1',
       phone_number_id: 'PNID-1',
       registered_at: '2026-01-01T00:00:00.000Z',
+      status: 'connected',
+      connected_at: '2026-01-01T00:00:00.000Z',
     }
     meta.registerPhoneNumber.mockRejectedValueOnce(new Error('Meta 500: register failed'))
 
@@ -450,12 +457,99 @@ describe('POST /api/whatsapp/config — Bug 1: registration error downgrades eve
     const updates = h.calls.updates.whatsapp_config ?? []
     expect(updates).toHaveLength(1)
     const payload = updates[0].payload
-    // Bug 1: the live connection is downgraded to disconnected on a transient
-    // registration failure. This assertion is intentionally correct-as-buggy.
+    // The connection-state columns are not written at all, so the live values
+    // survive: the client stays online.
+    expect(payload).not.toHaveProperty('status')
+    expect(payload).not.toHaveProperty('connected_at')
+    expect(payload).not.toHaveProperty('registered_at')
+    // The error is still recorded so the UI can surface it.
+    expect(payload.last_registration_error).toContain('register failed')
+  })
+
+  it('still writes disconnected on a registration error for a brand-new connection', async () => {
+    // Nothing live to protect — a failed first registration is genuinely
+    // disconnected.
+    meta.registerPhoneNumber.mockRejectedValueOnce(new Error('Meta 500: register failed'))
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      app_secret: 'APP-SECRET',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const row = (h.calls.inserts.whatsapp_config ?? [])[0]
+    expect(row.status).toBe('disconnected')
+    expect(row.connected_at).toBeNull()
+    expect(row.registered_at).toBeNull()
+    expect(row.last_registration_error).toContain('register failed')
+  })
+
+  it('still writes disconnected when an existing connection moves to a DIFFERENT number', async () => {
+    h.state.existing = {
+      id: 'cfg-1',
+      phone_number_id: 'PNID-OLD',
+      registered_at: '2026-01-01T00:00:00.000Z',
+      status: 'connected',
+      connected_at: '2026-01-01T00:00:00.000Z',
+    }
+    meta.registerPhoneNumber.mockRejectedValueOnce(new Error('Meta 500: register failed'))
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-NEW',
+      access_token: 'ACCESS-TOKEN',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const payload = (h.calls.updates.whatsapp_config ?? [])[0].payload
     expect(payload.status).toBe('disconnected')
     expect(payload.connected_at).toBeNull()
     expect(payload.registered_at).toBeNull()
-    expect(payload.last_registration_error).toContain('register failed')
+  })
+
+  it('still writes disconnected when the existing row was already disconnected', async () => {
+    h.state.existing = {
+      id: 'cfg-1',
+      phone_number_id: 'PNID-1',
+      registered_at: null,
+      status: 'disconnected',
+      connected_at: null,
+    }
+    meta.registerPhoneNumber.mockRejectedValueOnce(new Error('Meta 500: register failed'))
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const payload = (h.calls.updates.whatsapp_config ?? [])[0].payload
+    expect(payload.status).toBe('disconnected')
+  })
+
+  it('writes connected normally when registration succeeds', async () => {
+    h.state.existing = {
+      id: 'cfg-1',
+      phone_number_id: 'PNID-1',
+      registered_at: null,
+      status: 'disconnected',
+      connected_at: null,
+    }
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const payload = (h.calls.updates.whatsapp_config ?? [])[0].payload
+    expect(payload.status).toBe('connected')
+    expect(payload.connected_at).toBeTruthy()
+    expect(payload.registered_at).toBeTruthy()
   })
 })
 
