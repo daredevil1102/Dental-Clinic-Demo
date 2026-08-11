@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { supabaseAdmin } from '@/lib/flows/admin-client'
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -172,7 +173,15 @@ export async function POST(request: Request) {
     // `SendMessageError` carries a machine code + HTTP status; the
     // dashboard maps it to the internal `{ error }` shape.
     try {
-      const result = await sendMessageToConversation(supabase, accountId, {
+      // Service-role client, matching what `/api/v1/messages` already passes
+      // into this same core. The core reads whatsapp_config.access_token, and
+      // §6.2 revokes credential columns from `authenticated` — so a
+      // user-scoped client here would break every dashboard send. Tenancy is
+      // not weakened: the core takes `accountId` explicitly and scopes its
+      // entry-point conversation lookup by it (send-message.ts:222-225);
+      // everything else hangs off that verified conversation. The route has
+      // also already confirmed the caller owns this conversation above.
+      const result = await sendMessageToConversation(supabaseAdmin(), accountId, {
         conversationId,
         messageType: message_type,
         contentText: content_text,

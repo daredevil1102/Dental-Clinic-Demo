@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
+import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { submitMessageTemplate } from '@/lib/whatsapp/meta-api'
 import {
@@ -149,7 +150,10 @@ export async function POST(request: Request) {
       metaTemplateId = `dry-run-${crypto.randomUUID()}`
       metaStatus = 'PENDING'
     } else {
-      const { data: config, error: configError } = await supabase
+      // Service-role: decrypts access_token to submit to Meta. §6.2 revokes
+      // credential columns from `authenticated`. Tenancy preserved by the
+      // explicit account_id filter.
+      const { data: config, error: configError } = await supabaseAdmin()
         .from('whatsapp_config')
         .select('*')
         .eq('account_id', accountId)

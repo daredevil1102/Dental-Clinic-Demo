@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { sendReactionMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
@@ -109,7 +110,9 @@ export async function POST(request: Request) {
     }
 
     // WhatsApp config + access token. Account-scoped post-multi-user.
-    const { data: config, error: configError } = await supabase
+    // Service-role: reads access_token. §6.2 revokes credential columns from
+    // `authenticated`. Tenancy preserved by the explicit account_id filter.
+    const { data: config, error: configError } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('phone_number_id, access_token')
       .eq('account_id', accountId)

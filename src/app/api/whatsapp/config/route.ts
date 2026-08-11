@@ -87,7 +87,12 @@ export async function GET() {
       )
     }
 
-    const { data: config, error: configError } = await supabase
+    // Service-role: this reads access_token to health-check it against Meta,
+    // and §6.2's grants make credential columns unreadable by `authenticated`
+    // (which is the role the user-scoped client uses, server-side or not).
+    // Tenancy is preserved by the explicit account_id filter, resolved from
+    // the caller's own profile above.
+    const { data: config, error: configError } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('phone_number_id, access_token, status')
       .eq('account_id', accountId)

@@ -124,17 +124,14 @@ vi.mock('@/lib/supabase/server', () => ({
   createClient: vi.fn(async () => supabaseMock),
 }))
 
+// The service-role client now backs the whole send core, not just the
+// flow_runs pause: P1-10 §6.2 revokes whatsapp_config's credential columns
+// from `authenticated`, so the route hands `sendMessageToConversation` a
+// service-role client (matching what /api/v1/messages already did). Model it
+// as a real, fully-capable client — the previous 3-method stub was only
+// adequate while the core ran on the user-scoped client.
 vi.mock('@/lib/flows/admin-client', () => ({
-  supabaseAdmin: () => ({
-    from: () => {
-      const b: Record<string, unknown> = {}
-      const chain = () => b
-      for (const m of ['update', 'eq', 'select']) b[m] = vi.fn(chain)
-      b.then = (resolve: (v: unknown) => unknown) =>
-        resolve({ data: null, error: null })
-      return b
-    },
-  }),
+  supabaseAdmin: () => supabaseMock,
 }))
 
 vi.mock('@/lib/whatsapp/encryption', () => ({
