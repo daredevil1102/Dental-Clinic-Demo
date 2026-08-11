@@ -23,6 +23,8 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { SettingsPanelHead } from './settings-panel-head';
+import { buildWhatsAppCredentialPayload } from './whatsapp-config-payload';
+import { MASKED_CREDENTIAL } from '@/lib/whatsapp/masked-credential';
 import {
   Accordion,
   AccordionItem,
@@ -30,8 +32,6 @@ import {
   AccordionContent,
 } from '@/components/ui/accordion';
 import type { BrowserWhatsAppConfig } from '@/types';
-
-const MASKED_TOKEN = '••••••••••••••••';
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
 type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
@@ -139,7 +139,7 @@ export function WhatsAppConfig() {
         setConfig(data);
         setPhoneNumberId(data.phone_number_id || '');
         setWabaId(data.waba_id || '');
-        setAccessToken(MASKED_TOKEN);
+        setAccessToken(MASKED_CREDENTIAL);
         setVerifyToken('');
         setPin('');
         setTokenEdited(false);
@@ -147,7 +147,7 @@ export function WhatsAppConfig() {
         // the row actually predates/has one. We cannot know which from the
         // narrowed select, so always mask on an existing connection — a
         // grandfathered NULL row simply gets prompted on its next real edit.
-        setAppSecret(MASKED_TOKEN);
+        setAppSecret(MASKED_CREDENTIAL);
         setAppSecretEdited(false);
       } else {
         setConfig(null);
@@ -217,16 +217,22 @@ export function WhatsAppConfig() {
       toast.error('Phone Number ID is required');
       return;
     }
-    if (!config && (!accessToken.trim() || !tokenEdited)) {
-      toast.error('Access Token is required for initial setup');
-      return;
-    }
-    // Mirrors the server's §5.1.1 rejection. Without an App Secret a new
-    // connection would silently fall back to META_APP_SECRET — another
-    // client's secret — and drop every inbound message while showing
-    // "Connected". The server 400 is the real boundary; this is the fast path.
-    if (!config && (!appSecret.trim() || !appSecretEdited)) {
-      toast.error(t('appSecretRequired'));
+    const credentialResult = buildWhatsAppCredentialPayload({
+      hasExistingConfig: Boolean(config),
+      accessToken,
+      tokenEdited,
+      appSecret,
+      appSecretEdited,
+    });
+
+    if (!credentialResult.ok) {
+      toast.error(
+        credentialResult.error === 'app_secret_required'
+          ? t('appSecretRequired')
+          : credentialResult.error === 'access_token_reentry_required'
+            ? 'Please re-enter the Access Token to save changes'
+            : 'Access Token is required for initial setup',
+      );
       return;
     }
 
@@ -245,26 +251,8 @@ export function WhatsAppConfig() {
         // requires it on first save or when changing numbers; for a
         // simple token rotation, leaving it blank skips re-register.
         pin: pin.trim() || null,
+        ...credentialResult.payload,
       };
-
-      if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
-        payload.access_token = accessToken.trim();
-      }
-
-      // Omitted unless genuinely re-entered — omission means "unchanged"
-      // server-side, which is what preserves a stored (or grandfathered NULL)
-      // secret on re-save. Never send the mask.
-      if (appSecretEdited && appSecret !== MASKED_TOKEN && appSecret.trim()) {
-        payload.app_secret = appSecret.trim();
-      } else if (config) {
-        // Existing config — reuse stored encrypted token by decrypting on the
-        // server. But our POST handler requires an access_token to verify
-        // with Meta. If the user didn't change the token, we need to signal
-        // that. Simplest: require token re-entry if they're updating.
-        toast.error('Please re-enter the Access Token to save changes');
-        setSaving(false);
-        return;
-      }
 
       const res = await fetch('/api/whatsapp/config', {
         method: 'POST',
@@ -680,7 +668,7 @@ export function WhatsAppConfig() {
                     setTokenEdited(true);
                   }}
                   onFocus={() => {
-                    if (accessToken === MASKED_TOKEN) {
+                    if (accessToken === MASKED_CREDENTIAL) {
                       setAccessToken('');
                       setTokenEdited(true);
                     }
@@ -722,7 +710,7 @@ export function WhatsAppConfig() {
                   setAppSecretEdited(true);
                 }}
                 onFocus={() => {
-                  if (appSecret === MASKED_TOKEN) {
+                  if (appSecret === MASKED_CREDENTIAL) {
                     setAppSecret('');
                     setAppSecretEdited(true);
                   }
