@@ -8,6 +8,7 @@ import {
 } from '@/lib/whatsapp/meta-api'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 import { MASKED_CREDENTIAL } from '@/lib/whatsapp/masked-credential'
+import { requireRole, toErrorResponse } from '@/lib/auth/account'
 
 /**
  * Resolve the caller's account_id from their profile. Inlined here
@@ -161,29 +162,18 @@ export async function GET() {
 /**
  * POST /api/whatsapp/config
  *
- * Saves or updates the WhatsApp config for the authenticated user.
+ * Saves or updates the WhatsApp config for the caller's account.
  * Verifies credentials with Meta first, then encrypts and stores.
+ *
+ * **Admin+ only** (§5.4). Until P1-10 this route had no role check at all —
+ * it resolved an account_id and wrote — so any member, including a viewer,
+ * could overwrite or delete the workspace's WhatsApp connection.
+ * `CODEX-SDD-WA-001` §11 always required owner/admin here; nobody had
+ * checked. GET is deliberately left open to any member (see below).
  */
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient()
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    const accountId = await resolveAccountId(supabase, user.id)
-    if (!accountId) {
-      return NextResponse.json(
-        { error: 'Your profile is not linked to an account.' },
-        { status: 403 },
-      )
-    }
+    const { supabase, userId, accountId } = await requireRole('admin')
 
     const body = await request.json()
     const { phone_number_id, waba_id, access_token, verify_token, pin, app_secret } =
@@ -462,7 +452,7 @@ export async function POST(request: Request) {
         .from('whatsapp_config')
         .insert({
           account_id: accountId,
-          user_id: user.id,
+          user_id: userId,
           ...baseRow,
         })
 
@@ -508,38 +498,25 @@ export async function POST(request: Request) {
       phone_info: phoneInfo,
     })
   } catch (error) {
-    console.error('Error in WhatsApp config POST:', error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    // Maps UnauthorizedError → 401 and ForbiddenError → 403 (including the
+    // role check above); anything else collapses to a generic 500.
+    return toErrorResponse(error)
   }
 }
 
 /**
  * DELETE /api/whatsapp/config
  *
- * Removes the authenticated user's WhatsApp configuration row.
- * Used by the "Reset Configuration" button to recover from a corrupted
- * encrypted token (mismatched ENCRYPTION_KEY across environments).
+ * Removes the account's WhatsApp configuration row. Used by the "Reset
+ * Configuration" button to recover from a corrupted encrypted token
+ * (mismatched ENCRYPTION_KEY across environments).
+ *
+ * **Admin+ only** (§5.4) — same reasoning as POST: deleting the connection
+ * takes the whole workspace offline, so it is not a viewer's to do.
  */
 export async function DELETE() {
   try {
-    const supabase = await createClient()
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    const accountId = await resolveAccountId(supabase, user.id)
-    if (!accountId) {
-      return NextResponse.json(
-        { error: 'Your profile is not linked to an account.' },
-        { status: 403 },
-      )
-    }
+    const { supabase, accountId } = await requireRole('admin')
 
     const { error: deleteError } = await supabase
       .from('whatsapp_config')
@@ -556,7 +533,6 @@ export async function DELETE() {
 
     return NextResponse.json({ success: true })
   } catch (error) {
-    console.error('Error in WhatsApp config DELETE:', error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return toErrorResponse(error)
   }
 }

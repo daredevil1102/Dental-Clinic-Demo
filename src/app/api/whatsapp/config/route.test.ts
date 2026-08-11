@@ -3,18 +3,20 @@ import { decrypt } from '@/lib/whatsapp/encryption'
 import { MASKED_CREDENTIAL } from '@/lib/whatsapp/masked-credential'
 
 // ---------------------------------------------------------------------------
-// CHARACTERIZATION tests for the manual connection save route (P1-10 §8.0b).
+// Tests for the manual connection save route (P1-10).
 //
-// These pin the route's *current* behaviour, INCLUDING the two known bugs, so
-// §8.7–§8.9 can be verified as deliberate changes rather than regressions:
+// Started life at §8.0b as characterization tests pinning the route's
+// behaviour INCLUDING its two bugs, so the §5 rewrite could be verified as
+// deliberate change rather than regression. Each has since been rewritten in
+// the same commit as the behaviour it covers:
 //
-//   Bug 1 (§5.2, fixed at 8.8): a registration error writes status
-//     'disconnected' + null timestamps even when re-saving a live connection.
-//     The test below ASSERTS 'disconnected' and passes against unchanged code.
-//     It is updated in the same commit that fixes the bug.
-//
-//   Bug 2 (§5.3, fixed at 8.9): a failed WABA subscription is swallowed and the
-//     route still reports a clean success. Characterized here as success:true.
+//   Bug 1 (§5.2) — fixed at 8.8. Was: a registration error wrote
+//     'disconnected' + null timestamps even for a live connection. Now: a live
+//     same-number connection is preserved and only the error is recorded.
+//   Bug 2 (§5.3) — fixed at 8.9. Was: a failed WABA subscription was swallowed
+//     and reported as a clean success. Now: surfaced on the response.
+//   No role gate (§5.4) — added at 8.9a. Was: any member, including a viewer,
+//     could overwrite or delete the connection. Now: requireRole('admin').
 //
 // Boundaries mocked at IO only:
 //   - @/lib/supabase/server      → in-memory user-scoped client
@@ -27,7 +29,10 @@ import { MASKED_CREDENTIAL } from '@/lib/whatsapp/masked-credential'
 interface ConfigState {
   user: { id: string } | null
   authError: unknown
-  profile: { account_id: string } | null
+  // requireRole('admin') reads account_id + account_role off the profile,
+  // then loads the account row by id.
+  profile: { account_id: string; account_role?: string } | null
+  account: { id: string; name: string } | null
   profileError: unknown
   existing: Record<string, unknown> | null
   claimed: Record<string, unknown> | null
@@ -48,7 +53,8 @@ const h = vi.hoisted(() => {
   const reset = () => {
     state.user = { id: 'user-1' }
     state.authError = null
-    state.profile = { account_id: 'acct-1' }
+    state.profile = { account_id: 'acct-1', account_role: 'admin' }
+    state.account = { id: 'acct-1', name: 'Test Workspace' }
     state.profileError = null
     state.existing = null
     state.claimed = null
@@ -113,6 +119,8 @@ function makeServerClient() {
       switch (table) {
         case 'profiles':
           return { data: h.state.profile, error: h.state.profileError }
+        case 'accounts':
+          return { data: h.state.account, error: null }
         case 'whatsapp_config':
           return { data: h.state.existing, error: null }
         default:
@@ -177,7 +185,7 @@ const meta = vi.hoisted(() => ({
 
 vi.mock('@/lib/whatsapp/meta-api', () => meta)
 
-import { POST } from './route'
+import { DELETE, POST } from './route'
 
 function postConfig(body: Record<string, unknown>) {
   return POST(
@@ -229,7 +237,7 @@ describe('POST /api/whatsapp/config — auth and validation', () => {
 })
 
 describe('POST /api/whatsapp/config — happy path', () => {
-  it('stores encrypted credentials as a connected config for any account-linked user (no role gate today)', async () => {
+  it('stores encrypted credentials as a connected config for an admin', async () => {
     const res = await postConfig({
       phone_number_id: 'PNID-1',
       waba_id: 'WABA-1',
@@ -632,5 +640,71 @@ describe('POST /api/whatsapp/config — surfaces subscription failure (§5.3)', 
     expect(json.success).toBe(false)
     expect(json.registration_error).toContain('register failed')
     expect(json.subscription_error).toContain('subscribe failed')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §5.4 — the role gate. This asserts NEW behaviour: before 8.9a the route had
+// no role check at all (the 8.0b baseline documented its absence), so any
+// workspace member — including a viewer — could overwrite or delete the
+// connection. P1-10 is what makes those stored credentials worth stealing.
+// ---------------------------------------------------------------------------
+describe('POST/DELETE /api/whatsapp/config — requireRole(admin) (§5.4)', () => {
+  const adminPayload = {
+    phone_number_id: 'PNID-1',
+    access_token: 'ACCESS-TOKEN',
+    app_secret: 'APP-SECRET',
+    pin: '123456',
+  }
+
+  for (const role of ['viewer', 'agent'] as const) {
+    it(`refuses a ${role}: POST → 403, nothing written, no Meta call`, async () => {
+      h.state.profile = { account_id: 'acct-1', account_role: role }
+
+      const res = await postConfig(adminPayload)
+
+      expect(res.status).toBe(403)
+      expect(h.calls.inserts.whatsapp_config).toBeUndefined()
+      expect(h.calls.updates.whatsapp_config).toBeUndefined()
+      expect(meta.verifyPhoneNumber).not.toHaveBeenCalled()
+    })
+
+    it(`refuses a ${role}: DELETE → 403, nothing deleted`, async () => {
+      h.state.profile = { account_id: 'acct-1', account_role: role }
+
+      const res = await DELETE()
+
+      expect(res.status).toBe(403)
+      expect(h.calls.deletes.whatsapp_config).toBeUndefined()
+    })
+  }
+
+  for (const role of ['admin', 'owner'] as const) {
+    it(`allows an ${role}: POST succeeds`, async () => {
+      h.state.profile = { account_id: 'acct-1', account_role: role }
+
+      const res = await postConfig(adminPayload)
+
+      expect(res.status).toBe(200)
+      expect(h.calls.inserts.whatsapp_config ?? []).toHaveLength(1)
+    })
+
+    it(`allows an ${role}: DELETE removes only this account's row`, async () => {
+      h.state.profile = { account_id: 'acct-1', account_role: role }
+
+      const res = await DELETE()
+
+      expect(res.status).toBe(200)
+      const deletes = h.calls.deletes.whatsapp_config ?? []
+      expect(deletes).toHaveLength(1)
+      expect(deletes[0].filters).toEqual({ account_id: 'acct-1' })
+    })
+  }
+
+  it('returns 401 for DELETE with no authenticated user', async () => {
+    h.state.user = null
+    const res = await DELETE()
+    expect(res.status).toBe(401)
+    expect(h.calls.deletes.whatsapp_config).toBeUndefined()
   })
 })
