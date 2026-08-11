@@ -7,6 +7,7 @@ import {
   verifyPhoneNumber,
 } from '@/lib/whatsapp/meta-api'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
+import { MASKED_CREDENTIAL } from '@/lib/whatsapp/masked-credential'
 
 /**
  * Resolve the caller's account_id from their profile. Inlined here
@@ -185,11 +186,28 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { phone_number_id, waba_id, access_token, verify_token, pin } = body
+    const { phone_number_id, waba_id, access_token, verify_token, pin, app_secret } =
+      body
 
     if (!access_token || !phone_number_id) {
       return NextResponse.json(
         { error: 'access_token and phone_number_id are required' },
+        { status: 400 }
+      )
+    }
+
+    // Never persist the mask. The form renders MASKED_CREDENTIAL in place of a
+    // stored credential and only submits a field the user actually replaced —
+    // but that client guard is a convenience, not a boundary. Saving the mask
+    // would overwrite a working credential with bullet characters (§5.1.1).
+    const submittedAppSecret =
+      typeof app_secret === 'string' ? app_secret.trim() : ''
+    if (access_token === MASKED_CREDENTIAL || submittedAppSecret === MASKED_CREDENTIAL) {
+      return NextResponse.json(
+        {
+          error:
+            'Paste the real credential value, not the masked placeholder. Leave a field untouched to keep the stored value.',
+        },
         { status: 400 }
       )
     }
@@ -235,6 +253,36 @@ export async function POST(request: Request) {
       )
     }
 
+    // Look up any pre-existing row for this account so we know whether
+    // this number is already registered with Meta — if so we can skip
+    // /register when the user didn't provide a PIN this time around.
+    //
+    // Read BEFORE the Meta call: it also decides whether this save is a
+    // create (App Secret mandatory, §5.1.1) and a rejected create must not
+    // burn a Meta round trip.
+    const { data: existing } = await supabase
+      .from('whatsapp_config')
+      .select('id, registered_at, phone_number_id')
+      .eq('account_id', accountId)
+      .maybeSingle()
+
+    // App Secret is REQUIRED on create. Nullable in the schema is a statement
+    // about one grandfathered row, not about the API: without it a new
+    // connection silently falls back to META_APP_SECRET — another client's
+    // secret — and every inbound message for this workspace is dropped 401
+    // while the UI says "Connected" (§1, §5.1.1). Omitting it on an EXISTING
+    // connection means "unchanged" and is allowed, which is what keeps the
+    // grandfathered row re-savable.
+    if (!existing && !submittedAppSecret) {
+      return NextResponse.json(
+        {
+          error:
+            'Meta App Secret is required to connect a number. Find it in Meta → App Settings → Basic → App Secret (your own app, not one ConnectsWA issues).',
+        },
+        { status: 400 }
+      )
+    }
+
     // Verify credentials with Meta BEFORE saving
     let phoneInfo
     try {
@@ -251,12 +299,16 @@ export async function POST(request: Request) {
       )
     }
 
-    // Encrypt sensitive tokens before storing
+    // Encrypt sensitive tokens before storing. `app_secret` is encrypted
+    // exactly like the others and, like them, is never returned or logged —
+    // not even as ciphertext.
     let encryptedAccessToken: string
     let encryptedVerifyToken: string | null
+    let encryptedAppSecret: string | null
     try {
       encryptedAccessToken = encrypt(access_token)
       encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
+      encryptedAppSecret = submittedAppSecret ? encrypt(submittedAppSecret) : null
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown encryption error'
       console.error('Encryption failed:', message)
@@ -268,15 +320,6 @@ export async function POST(request: Request) {
         { status: 500 }
       )
     }
-
-    // Look up any pre-existing row for this account so we know whether
-    // this number is already registered with Meta — if so we can skip
-    // /register when the user didn't provide a PIN this time around.
-    const { data: existing } = await supabase
-      .from('whatsapp_config')
-      .select('id, registered_at, phone_number_id')
-      .eq('account_id', accountId)
-      .maybeSingle()
 
     const sameNumber =
       existing?.phone_number_id === phone_number_id &&
@@ -353,7 +396,7 @@ export async function POST(request: Request) {
     // Persist everything in one shot. If /register failed we still
     // store the credentials and the error so the UI can guide the
     // user through a retry.
-    const baseRow = {
+    const baseRow: Record<string, unknown> = {
       phone_number_id,
       waba_id: waba_id || null,
       access_token: encryptedAccessToken,
@@ -364,6 +407,15 @@ export async function POST(request: Request) {
       subscribed_apps_at: subscribedAppsAt ?? null,
       last_registration_error: registrationError,
       updated_at: new Date().toISOString(),
+    }
+
+    // Only write app_secret when one was actually submitted. Omitting the key
+    // entirely (rather than writing null) is what makes "omitted means
+    // unchanged" true on an update, and leaves a grandfathered NULL row still
+    // verifying via META_APP_SECRET (§5.1.1 rows 3-4). On a create it is
+    // always present — the guard above rejects a create without one.
+    if (encryptedAppSecret) {
+      baseRow.app_secret = encryptedAppSecret
     }
 
     if (existing) {

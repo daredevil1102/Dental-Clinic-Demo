@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { MASKED_CREDENTIAL } from '@/lib/whatsapp/masked-credential'
 
 // ---------------------------------------------------------------------------
 // CHARACTERIZATION tests for the manual connection save route (P1-10 §8.0b).
@@ -234,6 +235,7 @@ describe('POST /api/whatsapp/config — happy path', () => {
       waba_id: 'WABA-1',
       access_token: 'ACCESS-TOKEN',
       verify_token: 'VERIFY-TOKEN',
+      app_secret: 'APP-SECRET',
       pin: '123456',
     })
     const json = await res.json()
@@ -251,6 +253,160 @@ describe('POST /api/whatsapp/config — happy path', () => {
     expect(decrypt(row.access_token as string)).toBe('ACCESS-TOKEN')
     expect(decrypt(row.verify_token as string)).toBe('VERIFY-TOKEN')
     expect(row.subscribed_apps_at).toBeTruthy()
+  })
+
+  it('never echoes a credential back in the response', async () => {
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      verify_token: 'VERIFY-TOKEN',
+      app_secret: 'APP-SECRET',
+      pin: '123456',
+    })
+    const raw = JSON.stringify(await res.json())
+    expect(raw).not.toContain('APP-SECRET')
+    expect(raw).not.toContain('ACCESS-TOKEN')
+    expect(raw).not.toContain('VERIFY-TOKEN')
+    // Not even the ciphertext.
+    const stored = (h.calls.inserts.whatsapp_config ?? [])[0]
+    expect(raw).not.toContain(stored.app_secret as string)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §5.1.1 — the App Secret is REQUIRED on create. This is the regression guard
+// for §1: without it a new connection silently falls back to META_APP_SECRET
+// (another client's secret) and every inbound message is dropped 401 while the
+// UI says "Connected".
+// ---------------------------------------------------------------------------
+describe('POST /api/whatsapp/config — App Secret requirement (§5.1.1)', () => {
+  it('rejects a NEW connection with no app_secret: 400, nothing written, no Meta call', async () => {
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      pin: '123456',
+    })
+    const json = await res.json()
+
+    expect(res.status).toBe(400)
+    expect(json.error).toMatch(/app secret/i)
+    // Names where to find it — the most likely onboarding mistake.
+    expect(json.error).toMatch(/App Settings/i)
+    expect(h.calls.inserts.whatsapp_config).toBeUndefined()
+    expect(h.calls.updates.whatsapp_config).toBeUndefined()
+    // Rejected before burning a Meta round trip.
+    expect(meta.verifyPhoneNumber).not.toHaveBeenCalled()
+    expect(meta.registerPhoneNumber).not.toHaveBeenCalled()
+  })
+
+  it('rejects a NEW connection with a whitespace-only app_secret', async () => {
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      app_secret: '   ',
+      pin: '123456',
+    })
+    expect(res.status).toBe(400)
+    expect(h.calls.inserts.whatsapp_config).toBeUndefined()
+  })
+
+  it('stores a NEW connection\'s app_secret encrypted at rest', async () => {
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      app_secret: 'APP-SECRET',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const row = (h.calls.inserts.whatsapp_config ?? [])[0]
+    expect(row.app_secret).not.toBe('APP-SECRET')
+    expect(decrypt(row.app_secret as string)).toBe('APP-SECRET')
+  })
+
+  it('preserves the stored ciphertext when an EXISTING connection is re-saved with app_secret omitted', async () => {
+    h.state.existing = {
+      id: 'cfg-1',
+      phone_number_id: 'PNID-1',
+      registered_at: '2026-01-01T00:00:00.000Z',
+    }
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const update = (h.calls.updates.whatsapp_config ?? [])[0]
+    // The key is absent entirely — not written as null — so whatever is
+    // stored (ciphertext, or NULL for a grandfathered row) survives untouched.
+    expect(update.payload).not.toHaveProperty('app_secret')
+  })
+
+  it('lets a grandfathered NULL row re-save without an app_secret (no 400)', async () => {
+    // The one production connection that predates 037: app_secret IS NULL and
+    // keeps verifying via META_APP_SECRET. A re-save must never demand one.
+    h.state.existing = { id: 'cfg-legacy', phone_number_id: 'PNID-1', registered_at: null }
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+    const update = (h.calls.updates.whatsapp_config ?? [])[0]
+    expect(update.payload).not.toHaveProperty('app_secret')
+  })
+
+  it('updates the stored app_secret when an existing connection submits a new one', async () => {
+    h.state.existing = {
+      id: 'cfg-1',
+      phone_number_id: 'PNID-1',
+      registered_at: '2026-01-01T00:00:00.000Z',
+    }
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      app_secret: 'ROTATED-SECRET',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const update = (h.calls.updates.whatsapp_config ?? [])[0]
+    expect(decrypt(update.payload.app_secret as string)).toBe('ROTATED-SECRET')
+  })
+
+  it('rejects the literal mask string server-side, storing nothing', async () => {
+    h.state.existing = {
+      id: 'cfg-1',
+      phone_number_id: 'PNID-1',
+      registered_at: '2026-01-01T00:00:00.000Z',
+    }
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      app_secret: MASKED_CREDENTIAL,
+      pin: '123456',
+    })
+
+    expect(res.status).toBe(400)
+    expect(h.calls.updates.whatsapp_config).toBeUndefined()
+    expect(h.calls.inserts.whatsapp_config).toBeUndefined()
+    expect(meta.verifyPhoneNumber).not.toHaveBeenCalled()
+  })
+
+  it('rejects a masked access_token server-side too', async () => {
+    h.state.existing = { id: 'cfg-1', phone_number_id: 'PNID-1', registered_at: null }
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: MASKED_CREDENTIAL,
+      pin: '123456',
+    })
+    expect(res.status).toBe(400)
+    expect(h.calls.updates.whatsapp_config).toBeUndefined()
   })
 })
 
@@ -311,6 +467,7 @@ describe('POST /api/whatsapp/config — Bug 2: subscription failure reported as 
       phone_number_id: 'PNID-1',
       waba_id: 'WABA-1',
       access_token: 'ACCESS-TOKEN',
+      app_secret: 'APP-SECRET',
       pin: '123456',
     })
     const json = await res.json()
