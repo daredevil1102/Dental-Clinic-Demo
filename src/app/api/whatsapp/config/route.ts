@@ -377,19 +377,23 @@ export async function POST(request: Request) {
     // Skipped only when there's no waba_id (legacy rows from before
     // we required it).
     let subscribedAppsAt: string | null = null
+    // Bug 2 (§5.3): a failed subscription used to be swallowed with a
+    // console.warn and reported as a clean success — so onboarding "completed"
+    // while Meta never delivered a single message and the inbox stayed empty
+    // forever. The call stays non-fatal (a client may have subscribed by hand),
+    // but the failure is now captured and returned so the UI can say so.
+    let subscriptionError: string | null = null
     if (waba_id) {
       try {
         await subscribeWabaToApp({
           wabaId: waba_id,
           accessToken: access_token,
         })
+        // Recorded only on actual success.
         subscribedAppsAt = new Date().toISOString()
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        console.warn('WABA subscribed_apps failed (non-fatal):', message)
-        // Subscription failures are rare once the App has the right
-        // permissions; we don't block save on them — the diagnostic
-        // endpoint surfaces this state too.
+        subscriptionError = err instanceof Error ? err.message : String(err)
+        console.warn('WABA subscribed_apps failed (non-fatal):', subscriptionError)
       }
     }
 
@@ -480,12 +484,17 @@ export async function POST(request: Request) {
         saved: true,
         registered: false,
         registration_error: registrationError,
+        subscribed: waba_id ? subscriptionError === null : null,
+        subscription_error: subscriptionError,
         phone_info: phoneInfo,
       })
     }
 
     return NextResponse.json({
-      success: true,
+      // Not a clean success when the WABA subscription failed: the
+      // credentials are saved and valid, but Meta will not deliver anything
+      // to this app, so the inbox would stay empty with no explanation (§5.3).
+      success: subscriptionError === null,
       saved: true,
       registered: registeredAt != null,
       // Credentials are valid and saved, but inbound webhook
@@ -493,6 +502,9 @@ export async function POST(request: Request) {
       // Meta test number). The UI shows the "Not registered" banner
       // rather than claiming the number is fully live.
       registration_skipped: registrationSkipped,
+      // null when there was no waba_id to subscribe (legacy rows).
+      subscribed: waba_id ? subscriptionError === null : null,
+      subscription_error: subscriptionError,
       phone_info: phoneInfo,
     })
   } catch (error) {

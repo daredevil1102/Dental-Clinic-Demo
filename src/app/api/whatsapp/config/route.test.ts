@@ -553,8 +553,13 @@ describe('POST /api/whatsapp/config — no-downgrade guard (§5.2)', () => {
   })
 })
 
-describe('POST /api/whatsapp/config — Bug 2: subscription failure reported as success', () => {
-  it('returns success:true and null subscribed_apps_at when subscribeWabaToApp throws (CURRENT behaviour)', async () => {
+// ---------------------------------------------------------------------------
+// Bug 2 (§5.3) — FIXED at 8.9. This previously asserted success:true on a
+// failed subscription (onboarding "completes", inbox stays empty forever);
+// it now asserts the failure is surfaced, changed with the behaviour.
+// ---------------------------------------------------------------------------
+describe('POST /api/whatsapp/config — surfaces subscription failure (§5.3)', () => {
+  it('reports the failure instead of a clean success, and does not stamp subscribed_apps_at', async () => {
     meta.subscribeWabaToApp.mockRejectedValueOnce(new Error('subscribe failed'))
 
     const res = await postConfig({
@@ -566,13 +571,66 @@ describe('POST /api/whatsapp/config — Bug 2: subscription failure reported as 
     })
     const json = await res.json()
 
-    // Bug 2: onboarding "succeeds" even though inbound will never be delivered.
+    // The row is still saved (the call stays non-fatal — a client may have
+    // subscribed by hand), but the response must not claim a clean success.
     expect(res.status).toBe(200)
-    expect(json.success).toBe(true)
+    expect(json.saved).toBe(true)
+    expect(json.success).toBe(false)
+    expect(json.subscribed).toBe(false)
+    expect(json.subscription_error).toContain('subscribe failed')
 
     const inserts = h.calls.inserts.whatsapp_config ?? []
     expect(inserts).toHaveLength(1)
     expect(inserts[0].status).toBe('connected')
+    // Recorded only on actual success.
     expect(inserts[0].subscribed_apps_at).toBeNull()
+  })
+
+  it('reports a clean success and stamps subscribed_apps_at when subscription succeeds', async () => {
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      waba_id: 'WABA-1',
+      access_token: 'ACCESS-TOKEN',
+      app_secret: 'APP-SECRET',
+      pin: '123456',
+    })
+    const json = await res.json()
+
+    expect(json.success).toBe(true)
+    expect(json.subscribed).toBe(true)
+    expect(json.subscription_error).toBeNull()
+    expect((h.calls.inserts.whatsapp_config ?? [])[0].subscribed_apps_at).toBeTruthy()
+  })
+
+  it('reports subscribed:null when there is no waba_id to subscribe (legacy row)', async () => {
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      app_secret: 'APP-SECRET',
+      pin: '123456',
+    })
+    const json = await res.json()
+
+    expect(json.success).toBe(true)
+    expect(json.subscribed).toBeNull()
+    expect(meta.subscribeWabaToApp).not.toHaveBeenCalled()
+  })
+
+  it('carries the subscription error alongside a registration error', async () => {
+    meta.registerPhoneNumber.mockRejectedValueOnce(new Error('register failed'))
+    meta.subscribeWabaToApp.mockRejectedValueOnce(new Error('subscribe failed'))
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      waba_id: 'WABA-1',
+      access_token: 'ACCESS-TOKEN',
+      app_secret: 'APP-SECRET',
+      pin: '123456',
+    })
+    const json = await res.json()
+
+    expect(json.success).toBe(false)
+    expect(json.registration_error).toContain('register failed')
+    expect(json.subscription_error).toContain('subscribe failed')
   })
 })
