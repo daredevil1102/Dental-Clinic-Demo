@@ -2,6 +2,7 @@ import { NextResponse, after } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
+import { resolveConnectionForChange } from '@/lib/whatsapp/resolve-connection'
 import {
   processWebhook,
   type WhatsAppWebhookEntry,
@@ -110,23 +111,17 @@ export async function GET(request: Request) {
 
 // POST - Receive messages
 export async function POST(request: Request) {
-  // Read raw body first so we can HMAC-verify the exact bytes Meta
+  // Read the raw body first so we can HMAC-verify the exact bytes Meta
   // signed. request.json() would re-encode and break the signature.
   const rawBody = await request.text()
   const signature = request.headers.get('x-hub-signature-256')
 
-  // 8.6 replaces this env-var secret with the per-connection App Secret
-  // resolved from the payload (decrypt(config.app_secret), else the env
-  // fallback). Until then, behaviour is identical to reading the env
-  // internally, as the helper used to.
-  if (!verifyMetaWebhookSignature(rawBody, signature, process.env.META_APP_SECRET)) {
-    // 401 (not 200) — we want Meta's delivery dashboard to show failures
-    // loudly if a misconfiguration causes signatures to stop matching,
-    // rather than silently eating events.
-    console.warn('[webhook] rejected request with invalid signature')
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
-  }
-
+  // 1) Parse first — but treat the parsed body as UNTRUSTED input used only
+  //    to identify the sender. This reorder (parse → resolve → verify) is
+  //    deliberate: we need to know WHICH connection sent this to pick the
+  //    right App Secret. It is safe because parsing has no side effect and
+  //    resolution (step 2) is a read-only lookup. Do NOT "fix" this back to
+  //    verify-first — there is no single secret to verify against anymore.
   let body: { entry?: WhatsAppWebhookEntry[] }
   try {
     body = JSON.parse(rawBody)
@@ -134,23 +129,82 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  // Process AFTER the response so we ack Meta within their ~20s timeout
-  // (a slow ack triggers Meta retries + duplicate inserts), while still
-  // guaranteeing the work runs to completion.
+  // 2) Resolve the connection this delivery is FROM (phone_number_id first,
+  //    waba_id fallback — §4.1.1), off the first change. The signature
+  //    authenticates exactly one workspace (§4.1.2): we verify with that
+  //    connection's secret, and processWebhook then processes ONLY changes
+  //    that resolve back to it.
+  const firstEntry = body.entry?.[0]
+  const firstChange = firstEntry?.changes?.[0]
+  if (!firstEntry || !firstChange) {
+    console.warn('[webhook] delivery has no change to resolve a connection — rejecting')
+    return NextResponse.json({ error: 'Unresolvable webhook' }, { status: 401 })
+  }
+
+  const resolution = await resolveConnectionForChange(
+    firstEntry,
+    firstChange,
+    supabaseAdmin(),
+  )
+  if (!resolution.ok) {
+    // Unknown or ambiguous sender → fail closed, no side effect (§4.1.1).
+    // Never fall back to a second secret.
+    console.warn(
+      '[webhook] could not resolve a connection for this delivery — rejecting:',
+      resolution.reason,
+    )
+    return NextResponse.json({ error: 'Unresolvable webhook' }, { status: 401 })
+  }
+  const expectedConfig = resolution.config
+
+  // 3) Select the secret for THIS connection: its own decrypted app_secret
+  //    when set, else the deployment-wide META_APP_SECRET (grandfathered
+  //    manual rows). Neither available → 401.
   //
-  // This MUST use `after()` rather than a detached `processWebhook(body)`
-  // promise: on serverless platforms (we run on Vercel) the function can
-  // be frozen or terminated the moment the response is sent, so a floating
-  // promise's DB writes are not guaranteed to finish. That dropped a
-  // non-deterministic *subset* of inbound messages — contacts/conversations
-  // were created but the message insert never landed, leaving conversations
-  // that show in the inbox with an empty thread, and no logs to explain it
-  // (see issue #301). `after()` hands the callback to the runtime, which
-  // keeps the function alive until it resolves (within the route's
-  // maxDuration).
+  //    `app_secret IS NULL` means one thing today: a manual connection
+  //    without its own secret yet. claude-02 adds a second NULL population
+  //    (embedded), at which point this must narrow to
+  //    `connection_method === 'manual'` — see claude-02 §4.1.
+  let secret: string | null
+  if (expectedConfig.app_secret) {
+    try {
+      secret = decrypt(expectedConfig.app_secret)
+    } catch (err) {
+      console.error(
+        '[webhook] failed to decrypt app_secret for connection',
+        expectedConfig.id,
+        err,
+      )
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+    }
+  } else {
+    secret = process.env.META_APP_SECRET ?? null
+  }
+
+  // 4) Verify the HMAC over the UNTOUCHED raw body string with that secret.
+  //    401 (not 200) — we want Meta's delivery dashboard to show failures
+  //    loudly if a misconfiguration causes signatures to stop matching,
+  //    rather than silently eating events.
+  if (!verifyMetaWebhookSignature(rawBody, signature, secret)) {
+    console.warn('[webhook] rejected request with invalid signature')
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+  }
+
+  // 5) Process AFTER the response so we ack Meta within their ~20s timeout
+  //    (a slow ack triggers Meta retries + duplicate inserts), while still
+  //    guaranteeing the work runs to completion. `processWebhook` receives
+  //    the verified connection as `expectedConfig` and skips any change that
+  //    resolves elsewhere (§4.1.2).
+  //
+  //    This MUST use `after()` rather than a detached promise: on serverless
+  //    platforms (we run on Vercel) the function can be frozen the moment the
+  //    response is sent, so a floating promise's DB writes are not guaranteed
+  //    to finish. That dropped a non-deterministic subset of inbound messages
+  //    (issue #301). `after()` keeps the function alive until it resolves
+  //    (within the route's maxDuration).
   after(async () => {
     try {
-      await processWebhook(body)
+      await processWebhook(body, expectedConfig)
     } catch (error) {
       console.error('Error processing webhook:', error)
     }

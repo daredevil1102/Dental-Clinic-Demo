@@ -104,7 +104,13 @@ export interface WhatsAppWebhookEntry {
 /** One element of `entry.changes` — the unit of work (§4.4.1). */
 export type WhatsAppChange = WhatsAppWebhookEntry['changes'][number]
 
-export async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
+export async function processWebhook(
+  body: { entry?: WhatsAppWebhookEntry[] },
+  // The connection whose App Secret verified this delivery. On the manual
+  // route the signature authenticates EXACTLY ONE workspace (§4.1.2), so
+  // only changes that resolve back to this same connection may be processed.
+  expectedConfig: WhatsAppConfig,
+) {
   if (!body.entry) return
 
   // The unit of work is a *change*, not an entry: `phone_number_id` lives on
@@ -112,9 +118,9 @@ export async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
   // each change to its own connection, then dispatch. A change that resolves
   // to no connection (unknown / ambiguous) is skipped and logged, never
   // aborting its siblings (§4.4.1). claude-02's provider route reuses
-  // `resolveConnectionForChange`; the per-route trust rule (which connection
-  // a change is *allowed* to resolve to) is added at the route boundary in
-  // §4.1.2 — here every resolved change is processed.
+  // `resolveConnectionForChange` but does NOT pass an expectedConfig — one
+  // provider signature legitimately covers every embedded workspace, so it
+  // gates on `connection_method === 'embedded'` instead (claude-02 §4.0).
   for (const entry of body.entry) {
     for (const change of entry.changes) {
       const resolution = await resolveConnectionForChange(
@@ -123,6 +129,29 @@ export async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
         supabaseAdmin(),
       )
       if (!resolution.ok) continue
+
+      // §4.1.2 — THE tenancy boundary. Every manual client owns their Meta
+      // app and therefore knows their own App Secret, so a client can forge
+      // any payload and sign it validly. If we processed each change on
+      // whatever connection it resolves to, client A could craft a change
+      // carrying B's phone_number_id, sign it with A's own (valid) secret,
+      // and write into B's inbox. The signature is genuine — it just does
+      // not authenticate B. So: a change resolving to any connection other
+      // than the one that signed this delivery is skipped and logged with
+      // both accounts. If this check is ever removed, any manual client can
+      // write into any other workspace.
+      if (resolution.config.id !== expectedConfig.id) {
+        console.error(
+          '[webhook] SECURITY: a validly-signed change resolved to a ' +
+            'different connection than the one that signed this delivery — ' +
+            'skipping (possible cross-tenant forgery or a Meta bug). ' +
+            `verified account=${expectedConfig.account_id} ` +
+            `config=${expectedConfig.id}; change account=` +
+            `${resolution.config.account_id} config=${resolution.config.id}`,
+        )
+        continue
+      }
+
       await processWebhookChange(change, resolution.config)
     }
   }

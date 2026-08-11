@@ -124,8 +124,22 @@ function makeAdminClient() {
         return { data: null, error: null }
       }
       switch (table) {
-        case 'whatsapp_config':
-          return { data: h.state.configs, error: h.state.configError }
+        case 'whatsapp_config': {
+          // The GET verify-token loop selects with no phone/waba filter and
+          // wants every row; resolveConnectionForChange filters by exactly
+          // one of phone_number_id / waba_id. Emulate that `.eq()` filter so
+          // multi-config deliveries resolve to the right row.
+          if (h.state.configs == null) {
+            return { data: h.state.configs, error: h.state.configError }
+          }
+          let rows = h.state.configs
+          if ('phone_number_id' in ctx.filters) {
+            rows = rows.filter((r) => r.phone_number_id === ctx.filters.phone_number_id)
+          } else if ('waba_id' in ctx.filters) {
+            rows = rows.filter((r) => r.waba_id === ctx.filters.waba_id)
+          }
+          return { data: rows, error: h.state.configError }
+        }
         case 'conversations':
           return { data: h.state.conversation ? [h.state.conversation] : [], error: null }
         case 'broadcast_recipients':
@@ -352,8 +366,20 @@ describe('GET /api/whatsapp/webhook — verification handshake', () => {
   })
 })
 
+// A resolvable manual connection with NO app_secret (grandfathered row) —
+// verified via the META_APP_SECRET fallback, which is what `sign()` uses by
+// default. `access_token` is a placeholder because these tests reject before
+// any message is processed (nothing decrypts it).
+const INBOUND_CONFIG = {
+  id: 'cfg1',
+  account_id: 'acct-1',
+  user_id: 'user-1',
+  phone_number_id: 'PNID-1',
+  access_token: 'enc',
+}
+
 describe('POST /api/whatsapp/webhook — signature gate', () => {
-  it('accepts a body signed with the correct secret (200) and persists the inbound message', async () => {
+  it('accepts a body signed with the META_APP_SECRET fallback (no app_secret) and persists the inbound message', async () => {
     h.state.configs = [
       {
         id: 'cfg1',
@@ -361,6 +387,7 @@ describe('POST /api/whatsapp/webhook — signature gate', () => {
         user_id: 'user-1',
         phone_number_id: 'PNID-1',
         access_token: encrypt('ACCESS-TOKEN'),
+        // no app_secret → grandfathered row verifies via META_APP_SECRET
       },
     ]
     h.state.conversation = {
@@ -391,7 +418,58 @@ describe('POST /api/whatsapp/webhook — signature gate', () => {
     })
   })
 
+  it("verifies with the connection's own app_secret when set (per-client secret)", async () => {
+    h.state.configs = [
+      {
+        id: 'cfg1',
+        account_id: 'acct-1',
+        user_id: 'user-1',
+        phone_number_id: 'PNID-1',
+        access_token: encrypt('ACCESS-TOKEN'),
+        app_secret: encrypt('client-app-secret'),
+      },
+    ]
+    h.state.conversation = {
+      id: 'conv-1',
+      account_id: 'acct-1',
+      contact_id: 'contact-1',
+      unread_count: 0,
+    }
+    h.state.existingContact = { id: 'contact-1', name: 'Alice', account_id: 'acct-1' }
+
+    const raw = JSON.stringify(inboundMessageBody())
+    // Signed with the client's own App Secret, NOT META_APP_SECRET.
+    const res = await postRequest(raw, sign(raw, 'client-app-secret'))
+
+    expect(res.status).toBe(200)
+    await flushAfter()
+    expect(h.calls.inserts.messages ?? []).toHaveLength(1)
+  })
+
+  it("rejects a body signed with the wrong secret for a connection that has its own app_secret (401)", async () => {
+    h.state.configs = [
+      {
+        id: 'cfg1',
+        account_id: 'acct-1',
+        user_id: 'user-1',
+        phone_number_id: 'PNID-1',
+        access_token: 'enc',
+        app_secret: encrypt('client-app-secret'),
+      },
+    ]
+    const raw = JSON.stringify(inboundMessageBody())
+    // Signed with META_APP_SECRET, but this connection verifies with its own
+    // app_secret — so the env fallback must NOT rescue it.
+    const res = await postRequest(raw, sign(raw))
+
+    expect(res.status).toBe(401)
+    expect(h.afterCallbacks).toHaveLength(0)
+    await flushAfter()
+    expect(h.calls.inserts.messages).toBeUndefined()
+  })
+
   it('rejects an invalid signature (401), schedules no deferred work, and writes nothing', async () => {
+    h.state.configs = [INBOUND_CONFIG]
     const raw = JSON.stringify(inboundMessageBody())
     const res = await postRequest(raw, sign(raw, 'the-wrong-secret'))
 
@@ -403,6 +481,7 @@ describe('POST /api/whatsapp/webhook — signature gate', () => {
   })
 
   it('rejects when the signed bytes differ from the received bytes (raw-body sensitivity)', async () => {
+    h.state.configs = [INBOUND_CONFIG]
     const payload = inboundMessageBody()
     const signedBytes = JSON.stringify(payload)
     const header = sign(signedBytes)
@@ -414,32 +493,143 @@ describe('POST /api/whatsapp/webhook — signature gate', () => {
   })
 
   it('rejects a missing signature header (401)', async () => {
+    h.state.configs = [INBOUND_CONFIG]
     const raw = JSON.stringify(inboundMessageBody())
     const res = await postRequest(raw, null)
     expect(res.status).toBe(401)
   })
 })
 
-describe('POST /api/whatsapp/webhook — tenant resolution by phone_number_id', () => {
-  it('drops (does not throw) when no config matches the phone_number_id', async () => {
+describe('POST /api/whatsapp/webhook — tenant resolution (§4.1.1)', () => {
+  it('rejects (401) and writes nothing when no connection matches the phone_number_id', async () => {
     h.state.configs = []
     const raw = JSON.stringify(inboundMessageBody('UNKNOWN-PNID'))
     const res = await postRequest(raw, sign(raw))
 
-    expect(res.status).toBe(200)
+    // 8.6 change: resolution now happens BEFORE processing, so an unknown
+    // sender is rejected at the gate (was a 200 + internal drop pre-8.6).
+    expect(res.status).toBe(401)
+    expect(h.afterCallbacks).toHaveLength(0)
     await flushAfter()
     expect(h.calls.inserts.messages).toBeUndefined()
   })
 
-  it('drops when two configs share a phone_number_id (multi-row guard)', async () => {
+  it('rejects (401) when two connections share a phone_number_id (ambiguous)', async () => {
     h.state.configs = [
-      { id: 'a', account_id: 'a1', user_id: 'u1', phone_number_id: 'PNID-1', access_token: encrypt('x') },
-      { id: 'b', account_id: 'a2', user_id: 'u2', phone_number_id: 'PNID-1', access_token: encrypt('y') },
+      { id: 'a', account_id: 'a1', user_id: 'u1', phone_number_id: 'PNID-1', access_token: 'x' },
+      { id: 'b', account_id: 'a2', user_id: 'u2', phone_number_id: 'PNID-1', access_token: 'y' },
     ]
     const raw = JSON.stringify(inboundMessageBody('PNID-1'))
     const res = await postRequest(raw, sign(raw))
 
+    expect(res.status).toBe(401)
+    await flushAfter()
+    expect(h.calls.inserts.messages).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cross-tenant forgery guard (§4.1.2) — THE tenancy regression test.
+// Every manual client owns their Meta app and knows their own App Secret, so
+// a client can forge and validly sign a payload carrying another tenant's
+// number. If this ever regresses, any manual client can write into any other
+// workspace's inbox.
+// ---------------------------------------------------------------------------
+const SECRET_A = 'app-secret-A'
+const SECRET_B = 'app-secret-B'
+
+function configA() {
+  return {
+    id: 'cfg-A',
+    account_id: 'acct-A',
+    user_id: 'user-A',
+    phone_number_id: 'PNID-A',
+    waba_id: 'WABA-A',
+    access_token: encrypt('token-A'),
+    app_secret: encrypt(SECRET_A),
+  }
+}
+function configB() {
+  return {
+    id: 'cfg-B',
+    account_id: 'acct-B',
+    user_id: 'user-B',
+    phone_number_id: 'PNID-B',
+    waba_id: 'WABA-B',
+    access_token: encrypt('token-B'),
+    app_secret: encrypt(SECRET_B),
+  }
+}
+
+function messageChange(
+  phoneNumberId: string,
+  opts: { wamid: string; name: string; wa: string; body: string },
+) {
+  return {
+    field: 'messages',
+    value: {
+      messaging_product: 'whatsapp',
+      metadata: { display_phone_number: phoneNumberId, phone_number_id: phoneNumberId },
+      contacts: [{ profile: { name: opts.name }, wa_id: opts.wa }],
+      messages: [
+        { id: opts.wamid, from: opts.wa, timestamp: '1700000000', type: 'text', text: { body: opts.body } },
+      ],
+    },
+  }
+}
+
+describe('POST /api/whatsapp/webhook — cross-tenant forgery guard (§4.1.2)', () => {
+  it("processes A's change but SKIPS a B change smuggled into a delivery validly signed with A's secret", async () => {
+    h.state.configs = [configA(), configB()]
+    // processMessage for A needs a conversation + contact in A's account.
+    h.state.conversation = { id: 'conv-A', account_id: 'acct-A', contact_id: 'contact-A', unread_count: 0 }
+    h.state.existingContact = { id: 'contact-A', name: 'Alice', account_id: 'acct-A' }
+
+    // First change is A's number (delivery verifies with A's secret); second
+    // change smuggles B's number.
+    const body = {
+      entry: [
+        {
+          id: 'WABA-A',
+          changes: [
+            messageChange('PNID-A', { wamid: 'wamid.A', name: 'Alice', wa: '111', body: 'from A' }),
+            messageChange('PNID-B', { wamid: 'wamid.B', name: 'Bob', wa: '222', body: 'forged into B' }),
+          ],
+        },
+      ],
+    }
+    const raw = JSON.stringify(body)
+    const res = await postRequest(raw, sign(raw, SECRET_A)) // validly signed by A
+
     expect(res.status).toBe(200)
+    await flushAfter()
+
+    const inserts = h.calls.inserts.messages ?? []
+    // Exactly A's message landed; B's was skipped by the id-match check.
+    expect(inserts).toHaveLength(1)
+    expect(inserts[0]).toMatchObject({ conversation_id: 'conv-A', message_id: 'wamid.A' })
+    expect(inserts.some((m) => m.message_id === 'wamid.B')).toBe(false)
+  })
+
+  it('does not let entry.id spoofing route B\'s number through A\'s signature (per-change phone resolution, not entry-level)', async () => {
+    h.state.configs = [configA(), configB()]
+    // The only change carries B's number, but entry.id is A's WABA and it is
+    // signed with A's secret — an entry-level check would wave it through.
+    // Per-change resolution picks B (by phone_number_id) as the verifying
+    // connection, so A's signature fails against B's secret → 401.
+    const body = {
+      entry: [
+        {
+          id: 'WABA-A',
+          changes: [messageChange('PNID-B', { wamid: 'wamid.B', name: 'Bob', wa: '222', body: 'forged' })],
+        },
+      ],
+    }
+    const raw = JSON.stringify(body)
+    const res = await postRequest(raw, sign(raw, SECRET_A))
+
+    expect(res.status).toBe(401)
+    expect(h.afterCallbacks).toHaveLength(0)
     await flushAfter()
     expect(h.calls.inserts.messages).toBeUndefined()
   })
@@ -490,11 +680,11 @@ describe('POST /api/whatsapp/webhook — status updates (scoped, §4.4)', () => 
     expect(h.calls.updates.messages).toBeUndefined()
   })
 
-  it('drops a status whose connection cannot be resolved (no write at all)', async () => {
+  it('rejects (401) a status whose connection cannot be resolved (no write at all)', async () => {
     h.state.configs = []
     const raw = JSON.stringify(statusBody({ status: 'delivered' }))
     const res = await postRequest(raw, sign(raw))
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(401)
     await flushAfter()
     expect(h.calls.updates.messages).toBeUndefined()
     expect(h.calls.updates.broadcast_recipients).toBeUndefined()
