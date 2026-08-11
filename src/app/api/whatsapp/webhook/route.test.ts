@@ -3,13 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { encrypt } from '@/lib/whatsapp/encryption'
 
 // ---------------------------------------------------------------------------
-// CHARACTERIZATION tests for the inbound WhatsApp webhook route (P1-10 §8.0b).
+// Tests for the inbound WhatsApp webhook route (P1-10).
 //
-// These pin the route's *current* behaviour — bugs included — so the large
-// refactors in §8.4 (extract processWebhook) and §8.5 (per-change tenant
-// resolution + scoped status writes) can be verified as behaviour-preserving.
-// Do NOT "fix" anything to make a test read more nicely: if the code drops a
-// message, the test asserts the drop.
+// Began at §8.0b as characterization tests pinning the route's behaviour before
+// the §8.4 extraction and the §8.5/§8.6 rewrite, which is why the pure move at
+// 8.4 could be verified against them unmodified. They have since followed the
+// deliberate behaviour changes into the §9 end state, each in the same commit
+// as the change:
+//   §4.1/§4.1.1 — an unknown or ambiguous sender is now rejected 401 at the
+//     gate (was 200 + a silent internal drop).
+//   §4.4       — the status mirror is scoped to the resolved account's own row
+//     ids (was a bare, cross-tenant message_id filter).
+//   §4.1.2     — the cross-tenant forgery guard. If those tests are ever
+//     deleted, any manual client can write into any other workspace.
 //
 // Boundaries mocked at IO only:
 //   - @supabase/supabase-js  → in-memory admin client (records inserts/updates)
@@ -218,10 +224,16 @@ vi.mock('@/lib/webhooks/deliver', () => ({
   dispatchWebhookEvent: vi.fn(async () => {}),
 }))
 
-vi.mock('@/lib/whatsapp/template-webhook', () => ({
-  isTemplateWebhookField: vi.fn(() => false),
-  handleTemplateWebhookChange: vi.fn(async () => {}),
+// Mirrors the real predicate (the three `message_template_*` fields) so
+// template-lifecycle routing is exercised for real; the handler itself is a
+// spy we can assert against.
+const templateWebhook = vi.hoisted(() => ({
+  isTemplateWebhookField: vi.fn((field: string) => field.startsWith('message_template_')),
+  handleTemplateWebhookChange: vi.fn(
+    async (_change: { field: string; value: unknown }, _db: unknown) => {},
+  ),
 }))
+vi.mock('@/lib/whatsapp/template-webhook', () => templateWebhook)
 
 import { GET, POST } from './route'
 
@@ -782,5 +794,162 @@ describe('POST /api/whatsapp/webhook — status updates (scoped, §4.4)', () => 
     await postRequest(raw, sign(raw))
     await flushAfter()
     expect(h.calls.updates.broadcast_recipients).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §4.1.1 tenant resolution — the fallback path and its refusal to guess.
+// ---------------------------------------------------------------------------
+function templateEventBody(wabaId = 'WABA-1') {
+  return {
+    entry: [
+      {
+        id: wabaId,
+        changes: [
+          {
+            field: 'message_template_status_update',
+            value: {
+              event: 'APPROVED',
+              message_template_id: '123456',
+              message_template_name: 'order_update',
+            },
+          },
+        ],
+      },
+    ],
+  }
+}
+
+describe('POST /api/whatsapp/webhook — template events resolve by waba_id (§4.1.1)', () => {
+  it('resolves a template event (no metadata) via entry.id → waba_id and dispatches it', async () => {
+    h.state.configs = [
+      {
+        id: 'cfg-1',
+        account_id: 'acct-1',
+        user_id: 'user-1',
+        phone_number_id: 'PNID-1',
+        waba_id: 'WABA-1',
+        access_token: 'enc',
+      },
+    ]
+
+    const raw = JSON.stringify(templateEventBody('WABA-1'))
+    const res = await postRequest(raw, sign(raw))
+    expect(res.status).toBe(200)
+
+    await flushAfter()
+    expect(templateWebhook.handleTemplateWebhookChange).toHaveBeenCalledTimes(1)
+    const arg = templateWebhook.handleTemplateWebhookChange.mock
+      .calls[0][0] as unknown as { field: string }
+    expect(arg.field).toBe('message_template_status_update')
+  })
+
+  it('refuses to attribute a template event when two accounts share one waba_id', async () => {
+    // A real configuration — a WABA legitimately holds more than one number,
+    // and a template event carries no phone_number_id to disambiguate. The
+    // only safe answer is to drop it and name both accounts in the log.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.state.configs = [
+      { id: 'a', account_id: 'acct-A', user_id: 'uA', phone_number_id: 'P-A', waba_id: 'WABA-SHARED', access_token: 'enc' },
+      { id: 'b', account_id: 'acct-B', user_id: 'uB', phone_number_id: 'P-B', waba_id: 'WABA-SHARED', access_token: 'enc' },
+    ]
+
+    const raw = JSON.stringify(templateEventBody('WABA-SHARED'))
+    const res = await postRequest(raw, sign(raw))
+
+    expect(res.status).toBe(401)
+    await flushAfter()
+    expect(templateWebhook.handleTemplateWebhookChange).not.toHaveBeenCalled()
+
+    const logged = errSpy.mock.calls.flat().map(String).join(' ')
+    expect(logged).toContain('acct-A')
+    expect(logged).toContain('acct-B')
+    errSpy.mockRestore()
+  })
+
+  it('still resolves a message event by phone_number_id when waba_id is NULL', async () => {
+    h.state.configs = [
+      {
+        id: 'cfg-1',
+        account_id: 'acct-1',
+        user_id: 'user-1',
+        phone_number_id: 'PNID-1',
+        waba_id: null,
+        access_token: encrypt('ACCESS-TOKEN'),
+      },
+    ]
+    h.state.conversation = { id: 'conv-1', account_id: 'acct-1', contact_id: 'contact-1', unread_count: 0 }
+    h.state.existingContact = { id: 'contact-1', name: 'Alice', account_id: 'acct-1' }
+
+    const raw = JSON.stringify(inboundMessageBody('PNID-1'))
+    const res = await postRequest(raw, sign(raw))
+    expect(res.status).toBe(200)
+    await flushAfter()
+    expect(h.calls.inserts.messages ?? []).toHaveLength(1)
+  })
+})
+
+describe('POST /api/whatsapp/webhook — no secret available at all (§4.1 step 3)', () => {
+  it('fails closed with 401 when the connection has no app_secret and META_APP_SECRET is unset', async () => {
+    const original = process.env.META_APP_SECRET
+    const raw = JSON.stringify(inboundMessageBody())
+    // Sign with the real secret first, then remove it — proving the rejection
+    // is about having no secret to verify WITH, not a bad signature.
+    const header = sign(raw, original as string)
+    h.state.configs = [INBOUND_CONFIG]
+    delete process.env.META_APP_SECRET
+    try {
+      const res = await postRequest(raw, header)
+      expect(res.status).toBe(401)
+      expect(h.afterCallbacks).toHaveLength(0)
+    } finally {
+      process.env.META_APP_SECRET = original
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §4.4 status isolation — the cross-tenant write this release fixes.
+// ---------------------------------------------------------------------------
+describe('POST /api/whatsapp/webhook — status isolation between accounts (§4.4)', () => {
+  it("updates only the verified account's message when two accounts share a message_id", async () => {
+    // Meta message ids repeat across numbers (migration 009 dropped the unique
+    // constraint), so A and B can both hold a row with the SAME message_id.
+    h.state.configs = [configA(), configB()]
+    // The scoped lookup is filtered by conversations.account_id, so it returns
+    // only A's row — B's row with the same message_id is never selected.
+    h.state.ownMessageRows = [{ id: 'msg-A-row', conversation_id: 'conv-A' }]
+    h.state.broadcastRecipient = null
+
+    const body = {
+      entry: [
+        {
+          id: 'WABA-A',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: 'x', phone_number_id: 'PNID-A' },
+                statuses: [
+                  { id: 'wamid.SHARED', status: 'read', timestamp: '1700000000', recipient_id: '111' },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    }
+    const raw = JSON.stringify(body)
+    const res = await postRequest(raw, sign(raw, SECRET_A))
+    expect(res.status).toBe(200)
+    await flushAfter()
+
+    const updates = h.calls.updates.messages ?? []
+    expect(updates).toHaveLength(1)
+    // Bounded to A's own row id — never a bare message_id filter, which is
+    // what used to reach into B's rows.
+    expect(updates[0].filters).toEqual({ id__in: ['msg-A-row'] })
+    expect(updates[0].filters).not.toHaveProperty('message_id')
   })
 })
