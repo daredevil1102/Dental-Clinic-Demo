@@ -36,20 +36,29 @@ ALTER TABLE whatsapp_config
 -- Both are needed — RLS alone still lets a member read their own row's
 -- ciphertext by querying the columns directly from the browser.
 --
--- ⚠️ APPLY ORDER (§6.2 / task 8.10a): every SERVER path that decrypts a
--- token must first be switched to the service-role client. Applying this
--- REVOKE before those reads are moved takes sending OFFLINE. Do not paste
--- this migration into production until 8.10a(c) is complete.
+-- Table-level SELECT must be revoked FIRST. A column-level REVOKE alone is a
+-- no-op while the role still holds table-wide SELECT, which Supabase grants
+-- to anon and authenticated by default; the grant below then re-adds only
+-- the safe columns.
 --
--- ⚠️ REVIEW BEFORE APPLY (Postgres column-privilege semantics): a
--- column-level `REVOKE SELECT (col)` has NO effect while the role still
--- holds table-level SELECT (Supabase grants table-wide SELECT to
--- anon/authenticated by default). If the criterion-#4 test (a user-scoped
--- client selecting access_token must get a permission error, not a row of
--- nulls) does not go red with the statement below, this must instead become
--- `REVOKE SELECT ON whatsapp_config FROM anon, authenticated;` followed by a
--- `GRANT SELECT (<safe columns>) ...`. Verified against a representative row
--- at 8.10a, not here. Tracked in the 8.6 report.
+-- ⚠️ APPLY ORDER (§6.2 / task 8.10a, rollout step 2): every SERVER path that
+-- decrypts a token must be switched to the service-role client BEFORE these
+-- two statements run. `createClient()` from @/lib/supabase/server
+-- authenticates as `authenticated` — the same role the browser uses — so this
+-- revoke hits server code too. Running it early takes SENDING OFFLINE. The
+-- ALTER TABLE above is safe to apply on its own; these two are not.
+--
+-- ⚠️ CHECK WHILE APPLYING: revoking table SELECT also affects any write that
+-- RETURNS the row, because PostgREST needs SELECT on the returned columns.
+-- The config route's user-scoped update/insert (config/route.ts :371, :388)
+-- must either return nothing or return only granted columns — verify at
+-- 8.10a. claude-02 adds connection_method and business_id to the grant list.
 -- ------------------------------------------------------------
-REVOKE SELECT (access_token, verify_token, app_secret)
-  ON whatsapp_config FROM anon, authenticated;
+REVOKE SELECT ON whatsapp_config FROM anon, authenticated;
+
+GRANT SELECT (
+  id, account_id, phone_number_id, waba_id, status, connected_at,
+  registered_at, subscribed_apps_at, last_registration_error,
+  last_inbound_at, created_at, updated_at
+) ON whatsapp_config TO authenticated;
+-- anon gets nothing back.
