@@ -71,6 +71,14 @@ export function WhatsAppConfig() {
   const [verifyToken, setVerifyToken] = useState('');
   const [pin, setPin] = useState('');
   const [tokenEdited, setTokenEdited] = useState(false);
+  // Write-only, like the access token: the server never sends it back, so the
+  // form shows a mask and only submits a genuinely re-entered value.
+  const [appSecret, setAppSecret] = useState('');
+  const [appSecretEdited, setAppSecretEdited] = useState(false);
+  // Set from the save response when Meta accepted the credentials but the WABA
+  // is not subscribed to the app — inbound will never arrive (§5.3). Persistent
+  // card state, not a toast, because it survives the page.
+  const [subscriptionWarning, setSubscriptionWarning] = useState<string | null>(null);
 
   // True once /register has succeeded on Meta's side (timestamp set
   // in the row). When false, the saved config is metadata-only and
@@ -135,6 +143,12 @@ export function WhatsAppConfig() {
         setVerifyToken('');
         setPin('');
         setTokenEdited(false);
+        // A stored secret is never sent to the browser; show the mask only if
+        // the row actually predates/has one. We cannot know which from the
+        // narrowed select, so always mask on an existing connection — a
+        // grandfathered NULL row simply gets prompted on its next real edit.
+        setAppSecret(MASKED_TOKEN);
+        setAppSecretEdited(false);
       } else {
         setConfig(null);
         setPhoneNumberId('');
@@ -143,6 +157,8 @@ export function WhatsAppConfig() {
         setVerifyToken('');
         setPin('');
         setTokenEdited(false);
+        setAppSecret('');
+        setAppSecretEdited(false);
       }
       // Clear any stale probe result when reloading the row.
       setRegistrationProbe(null);
@@ -205,6 +221,14 @@ export function WhatsAppConfig() {
       toast.error('Access Token is required for initial setup');
       return;
     }
+    // Mirrors the server's §5.1.1 rejection. Without an App Secret a new
+    // connection would silently fall back to META_APP_SECRET — another
+    // client's secret — and drop every inbound message while showing
+    // "Connected". The server 400 is the real boundary; this is the fast path.
+    if (!config && (!appSecret.trim() || !appSecretEdited)) {
+      toast.error(t('appSecretRequired'));
+      return;
+    }
 
     try {
       setSaving(true);
@@ -225,6 +249,13 @@ export function WhatsAppConfig() {
 
       if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
         payload.access_token = accessToken.trim();
+      }
+
+      // Omitted unless genuinely re-entered — omission means "unchanged"
+      // server-side, which is what preserves a stored (or grandfathered NULL)
+      // secret on re-save. Never send the mask.
+      if (appSecretEdited && appSecret !== MASKED_TOKEN && appSecret.trim()) {
+        payload.app_secret = appSecret.trim();
       } else if (config) {
         // Existing config — reuse stored encrypted token by decrypting on the
         // server. But our POST handler requires an access_token to verify
@@ -255,6 +286,12 @@ export function WhatsAppConfig() {
       //                         failed; UI shows the specific error
       //                         and a retry path. registration_error
       //                         is human-readable from Meta.
+      // §5.3 — persistent warning, not a toast: credentials saved, but Meta
+      // will not deliver anything until the WABA is subscribed to the app.
+      setSubscriptionWarning(
+        data.subscribed === false ? (data.subscription_error as string) ?? '' : null,
+      );
+
       if (data.registered === false && data.registration_error) {
         toast.error(
           `Saved, but Meta couldn't register the number: ${data.registration_error}`,
@@ -470,6 +507,40 @@ export function WhatsAppConfig() {
             without a successful /register call the number won't
             receive inbound events. Surface this dimension separately
             so users don't trust a misleading green banner. */}
+        {/* §5.3 — the WABA is not subscribed to the app, so Meta will never
+            deliver an inbound message. Onboarding otherwise looks successful,
+            which is exactly why this is a persistent card state rather than a
+            toast that scrolls away. */}
+        {subscriptionWarning !== null && (
+          <Alert className="bg-amber-950/30 border-amber-700/50">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="size-4 text-amber-400" />
+              <AlertTitle className="mb-0 text-amber-200">
+                {t('notSubscribedTitle')}
+              </AlertTitle>
+            </div>
+            <AlertDescription className="text-muted-foreground mt-2 text-xs leading-relaxed">
+              {t('notSubscribedBody')}
+              {subscriptionWarning ? (
+                <span className="text-red-300"> &quot;{subscriptionWarning}&quot;</span>
+              ) : null}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* §6.3 — inbound health. "No inbound for six days" on a workspace
+            that used to receive hourly is the signal that catches a wrong
+            App Secret, visible without opening the database. */}
+        {config && (
+          <p className="text-xs text-muted-foreground">
+            {config.last_inbound_at
+              ? t('lastInboundAt', {
+                  date: new Date(config.last_inbound_at).toLocaleString(),
+                })
+              : t('lastInboundNever')}
+          </p>
+        )}
+
         {config && (
           <Alert
             className={
@@ -627,6 +698,43 @@ export function WhatsAppConfig() {
               {config && !tokenEdited && (
                 <p className="text-xs text-muted-foreground">
                   {t('tokenHidden')}
+                </p>
+              )}
+            </div>
+
+            {/* Meta App Secret — the per-client secret Meta signs inbound
+                webhooks with. Write-only: shown as a fixed mask once saved,
+                changed only by pasting a complete replacement, and never
+                revealed (no eye toggle, unlike the access token). Required on
+                first connect — the server 400s without it, which is the real
+                boundary; this is just the friendly half. */}
+            <div className="space-y-2">
+              <Label className="text-muted-foreground">
+                {t('appSecret')}
+                {!config && <span className="ml-1 text-red-400">*</span>}
+              </Label>
+              <Input
+                type="password"
+                placeholder={t('appSecretPlaceholder')}
+                value={appSecret}
+                onChange={(e) => {
+                  setAppSecret(e.target.value);
+                  setAppSecretEdited(true);
+                }}
+                onFocus={() => {
+                  if (appSecret === MASKED_TOKEN) {
+                    setAppSecret('');
+                    setAppSecretEdited(true);
+                  }
+                }}
+                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+              />
+              <p className="text-xs text-muted-foreground">
+                {t('appSecretHint')}
+              </p>
+              {config && !appSecretEdited && (
+                <p className="text-xs text-muted-foreground">
+                  {t('appSecretHidden')}
                 </p>
               )}
             </div>

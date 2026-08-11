@@ -1497,7 +1497,16 @@
       "step4_3": "위의 <strong class=\"text-foreground\">웹훅 콜백 URL</strong>을 붙여넣기",
       "step4_4": "여기서 설정한 것과 동일한 <strong class=\"text-foreground\">인증 토큰</strong>을 입력",
       "step4_5": "\"messages\" 웹훅 필드를 구독",
-      "metaDocs": "Meta WhatsApp API 문서"
+      "metaDocs": "Meta WhatsApp API 문서",
+      "appSecret": "Meta 앱 시크릿",
+      "appSecretPlaceholder": "앱의 App Secret을 붙여넣으세요",
+      "appSecretHint": "고객님 소유 Meta 앱의 시크릿입니다 — Meta → 앱 설정 → 기본 → 앱 시크릿. ConnectsWA가 발급하는 값이 아닙니다. 수신 웹훅이 실제로 Meta에서 왔음을 증명합니다.",
+      "appSecretHidden": "보안을 위해 앱 시크릿은 표시되지 않습니다. 변경하려면 새 값을 붙여넣으세요.",
+      "appSecretRequired": "번호를 연결하려면 Meta 앱 시크릿이 필요합니다. Meta → 앱 설정 → 기본 → 앱 시크릿에서 확인하세요.",
+      "notSubscribedTitle": "구독되지 않음 — 수신 메시지가 도착하지 않습니다",
+      "notSubscribedBody": "저장되었지만 이 WhatsApp 계정이 앱에 구독되어 있지 않아 Meta가 수신 메시지를 전달하지 않습니다. Meta에서 WABA를 구독한 후 다시 저장하세요.",
+      "lastInboundAt": "마지막 수신: {date}",
+      "lastInboundNever": "마지막 수신: 없음"
     },
     "sections": {
       "overview": "개요",

@@ -1498,7 +1498,16 @@
       "step4_3": "Paste the <strong class=\"text-foreground\">Webhook Callback URL</strong> from above",
       "step4_4": "Enter the same <strong class=\"text-foreground\">Verify Token</strong> you set here",
       "step4_5": "Subscribe to \"messages\" webhook field",
-      "metaDocs": "Meta WhatsApp API Documentation"
+      "metaDocs": "Meta WhatsApp API Documentation",
+      "appSecret": "Meta App Secret",
+      "appSecretPlaceholder": "Paste your app's App Secret",
+      "appSecretHint": "Your own Meta app’s secret — Meta → App Settings → Basic → App Secret. It is not something ConnectsWA issues. It proves an inbound webhook really came from Meta for your number.",
+      "appSecretHidden": "App Secret is hidden for security. Paste a new one to replace it.",
+      "appSecretRequired": "Meta App Secret is required to connect a number. Find it in Meta → App Settings → Basic → App Secret.",
+      "notSubscribedTitle": "Not subscribed — inbound messages will not arrive",
+      "notSubscribedBody": "Saved, but this WhatsApp account is not subscribed to your app, so Meta will not deliver incoming messages. Subscribe the WABA in Meta, then save again.",
+      "lastInboundAt": "Last inbound: {date}",
+      "lastInboundNever": "Last inbound: never"
     },
     "sections": {
       "overview": "Overview",
