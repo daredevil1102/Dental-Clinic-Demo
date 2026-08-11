@@ -382,6 +382,34 @@ async function handleStatusUpdate(
 }
 
 /**
+ * Record that this account just received inbound traffic (§3.1).
+ *
+ * Diagnostic only, and deliberately unable to break the inbound path: every
+ * failure mode — query error, thrown client, missing column on a deploy that
+ * predates migration 037 — is logged and swallowed.
+ *
+ * One extra UPDATE per inbound message is fine at this scale; if volume ever
+ * bites, throttle to once per minute per account rather than removing the
+ * signal. There is deliberately no `last_outbound_at` counterpart: three send
+ * paths bypass `send-message.ts`, so the column would read "never" while
+ * broadcasts were sending fine, and a diagnostic that lies is worse than none.
+ */
+async function stampLastInboundAt(accountId: string): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin()
+      .from('whatsapp_config')
+      .update({ last_inbound_at: new Date().toISOString() })
+      .eq('account_id', accountId)
+
+    if (error) {
+      console.warn('[webhook] last_inbound_at stamp failed (non-fatal):', error.message ?? error)
+    }
+  } catch (err) {
+    console.warn('[webhook] last_inbound_at stamp threw (non-fatal):', err)
+  }
+}
+
+/**
  * If an inbound message's sender is on a still-unreplied
  * broadcast_recipients row, flip it to `replied` so the reply count
  * advances on the parent broadcast.
@@ -630,6 +658,16 @@ async function processMessage(
     console.error('Error inserting message:', msgError)
     return
   }
+
+  // Inbound health signal (§3.1). Stamped only after an inbound message is
+  // actually persisted, so "last inbound 6 days ago" on a workspace that used
+  // to receive hourly is the visible symptom of §1's silent-401 failure —
+  // without opening the database.
+  //
+  // BEST-EFFORT BY CONTRACT: this is a diagnostic and must never become a new
+  // way for messaging to fail, so a failure is logged and swallowed, never
+  // propagated. Not awaited-for-correctness — the message is already saved.
+  await stampLastInboundAt(accountId)
 
   // Update conversation
   const { error: convError } = await supabaseAdmin()

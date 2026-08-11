@@ -32,6 +32,8 @@ interface WebhookState {
   // lookup (§4.4): the rows in THIS account carrying the status's message_id.
   ownMessageRows: Array<Record<string, unknown>>
   priorCustomerMsgCount: number
+  // Forces the best-effort last_inbound_at stamp to fail (§3.1).
+  configUpdateError: unknown
 }
 
 interface Recorded {
@@ -52,6 +54,7 @@ const h = vi.hoisted(() => {
     state.broadcastRecipient = null
     state.ownMessageRows = []
     state.priorCustomerMsgCount = 0
+    state.configUpdateError = null
     calls.inserts = {}
     calls.updates = {}
     calls.deletes = {}
@@ -117,7 +120,10 @@ function makeAdminClient() {
       }
       if (ctx.op === 'update') {
         record(h.calls.updates, table, { payload: ctx.payload ?? {}, filters: ctx.filters })
-        return { data: null, error: null }
+        return {
+          data: null,
+          error: table === 'whatsapp_config' ? h.state.configUpdateError : null,
+        }
       }
       if (ctx.op === 'delete') {
         record(h.calls.deletes, table, { filters: ctx.filters })
@@ -416,6 +422,43 @@ describe('POST /api/whatsapp/webhook — signature gate', () => {
       message_id: 'wamid.ABC',
       status: 'delivered',
     })
+
+    // §3.1 — inbound health signal, stamped for the resolved account only.
+    const stamps = h.calls.updates.whatsapp_config ?? []
+    expect(stamps).toHaveLength(1)
+    expect(stamps[0].payload.last_inbound_at).toBeTruthy()
+    expect(stamps[0].filters).toEqual({ account_id: 'acct-1' })
+  })
+
+  it('still persists the message when the last_inbound_at stamp fails (best-effort, §3.1)', async () => {
+    h.state.configs = [
+      {
+        id: 'cfg1',
+        account_id: 'acct-1',
+        user_id: 'user-1',
+        phone_number_id: 'PNID-1',
+        access_token: encrypt('ACCESS-TOKEN'),
+      },
+    ]
+    h.state.conversation = {
+      id: 'conv-1',
+      account_id: 'acct-1',
+      contact_id: 'contact-1',
+      unread_count: 0,
+    }
+    h.state.existingContact = { id: 'contact-1', name: 'Alice', account_id: 'acct-1' }
+    // The diagnostic must never become a new way for messaging to fail.
+    h.state.configUpdateError = { message: 'column last_inbound_at does not exist' }
+
+    const raw = JSON.stringify(inboundMessageBody())
+    const res = await postRequest(raw, sign(raw))
+    expect(res.status).toBe(200)
+
+    // Does not throw out of the after() callback, and the message still lands.
+    await flushAfter()
+    expect(h.calls.inserts.messages ?? []).toHaveLength(1)
+    // The conversation summary update still ran after the failed stamp.
+    expect(h.calls.updates.conversations ?? []).toHaveLength(1)
   })
 
   it("verifies with the connection's own app_secret when set (per-client secret)", async () => {
