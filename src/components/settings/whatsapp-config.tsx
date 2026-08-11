@@ -29,7 +29,7 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
-import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
+import type { BrowserWhatsAppConfig } from '@/types';
 
 const MASKED_TOKEN = '••••••••••••••••';
 
@@ -51,7 +51,9 @@ export function WhatsAppConfig() {
   const [testing, setTesting] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [showToken, setShowToken] = useState(false);
-  const [config, setConfig] = useState<WhatsAppConfigType | null>(null);
+  // Browser-readable columns only — the credential columns are revoked at
+  // the database (P1-10 §6.2), so they can never reach this state.
+  const [config, setConfig] = useState<BrowserWhatsAppConfig | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
   const [resetReason, setResetReason] = useState<ResetReason>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');

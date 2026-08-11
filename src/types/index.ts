@@ -306,6 +306,20 @@ export interface WhatsAppConfig {
   last_registration_error?: string;
 }
 
+/**
+ * The subset of `whatsapp_config` the BROWSER is allowed to read (P1-10 §6.2).
+ *
+ * Migration 037 revokes table SELECT from `authenticated` and grants back only
+ * these columns, so a browser query physically cannot return the credentials —
+ * or `user_id`, which is a pre-account-sharing vestige no browser code reads
+ * (§11.5). Server code that needs a credential goes through the service-role
+ * client and uses the full `WhatsAppConfig`.
+ */
+export type BrowserWhatsAppConfig = Omit<
+  WhatsAppConfig,
+  'user_id' | 'access_token' | 'verify_token' | 'app_secret'
+>;
+
 // Raw Meta status enum. We persist this verbatim from Meta (sync + webhook)
 // rather than collapsing to a local TitleCase set — distinctions like
 // PAUSED vs DISABLED vs IN_APPEAL drive the edit/resubmit/delete flows.
