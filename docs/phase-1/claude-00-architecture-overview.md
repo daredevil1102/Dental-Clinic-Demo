@@ -218,6 +218,18 @@ the phone number, not from a second Meta app. See `claude-03` § Before you star
 Every deploy: push → hPanel Git **Pull** → `npm ci` → `npm run build` →
 **Restart application**.
 
+**Select Node 24 in hPanel — the default is 22, and 22 will not install.**
+Hostinger's Managed Node.js offers 18, 20, 22 (default) and 24; the version
+selector is on the *Deployment settings* step. Node 20 and 22 ship npm 10,
+Node 24 ships npm 11, and the two majors materialise optional peer
+dependencies differently. `next-intl`'s copy of `@swc/core` peer-depends on
+`@swc/helpers >=0.5.17` while `next` hoists `0.5.15`, so npm 10 requires a
+nested lockfile entry that npm 11 omits. Deploy on the default and `npm ci`
+fails with `Missing: @swc/helpers@0.5.23 from lock file` — before the build
+runs, so the symptom is an install error, not a build error. `.nvmrc`, CI and
+both `engines` fields all pin 24; hPanel is the one place that isn't
+enforced, so it is the one place this can go wrong.
+
 **Migrations are not run by the deploy.** SQL from `supabase/migrations/` is
 pasted into the Supabase SQL editor manually, *before* the code deploy. Write
 every migration idempotent, guarded, and loud on failure. Because they run
