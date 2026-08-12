@@ -32,9 +32,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Must match .nvmrc and the Node version selected in hPanel. Node 24
+      # ships npm 11; Node 20 and 22 ship npm 10, and the two majors
+      # materialise optional peer dependencies differently — which is what
+      # silently desynced package-lock.json twice before (see the two
+      # `fix(deps): restore nested @swc/helpers entry` commits).
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies

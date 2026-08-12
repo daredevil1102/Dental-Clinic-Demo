@@ -78,6 +78,11 @@ in an afternoon and make yours.
 
 ## Quick start
 
+**Node 24 is required** — not merely recommended. `.nvmrc` pins it and CI
+enforces it. Node 20 and 22 ship npm 10, which resolves this project's
+optional peer dependencies differently and makes `npm ci` fail against a
+lockfile written by npm 11. If you use nvm, `nvm use` picks it up.
+
 ```bash
 # Fork on GitHub first: https://github.com/ArnasDon/wacrm → Fork
 git clone https://github.com/<your-username>/wacrm.git
