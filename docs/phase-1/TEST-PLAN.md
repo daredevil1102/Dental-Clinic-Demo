@@ -174,11 +174,11 @@ Run against **Prod (local)** for §5.1 and a **device/hosted** URL for §5.2.
 
 | ID   | Check                                                                                                     | Expected                                                                                              | Result |
 | ---- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------ |
-| M-01 | Characterization tests exist and pass for `whatsapp/webhook/route.ts` **against unchanged code**          | GET token match/mismatch, POST valid/invalid HMAC, raw-body sensitivity, unknown number, multi-row guard | ⬜     |
-| M-02 | Characterization tests exist and pass for `whatsapp/config/route.ts` **against unchanged code**           | Save persists encrypted; 409 cross-account; role enforcement; today's registration-error → `disconnected` | ⬜     |
-| M-03 | Status-update behaviour characterized                                                                     | `sent`/`delivered`/`read`/`failed` mirror onto `messages`; transition guard holds                      | ⬜     |
+| M-01 | Characterization tests exist and pass for `whatsapp/webhook/route.ts` **against unchanged code**          | GET token match/mismatch, POST valid/invalid HMAC, raw-body sensitivity, unknown number, multi-row guard | ✅ 8.0b |
+| M-02 | Characterization tests exist and pass for `whatsapp/config/route.ts` **against unchanged code**           | Save persists encrypted; 409 cross-account; role enforcement; today's registration-error → `disconnected` | ✅ 8.0b |
+| M-03 | Status-update behaviour characterized                                                                     | `sent`/`delivered`/`read`/`failed` mirror onto `messages`; transition guard holds                      | ✅ 8.0b |
 | M-04 | Full suite green, observed baseline recorded                                                              | 670/670 as of 2026-08-11. No feature work begins on a red or unexplained baseline                      | ✅     |
-| M-05 | Current production commit tagged **and pushed**                                                           | `pre-p1-10` at `1a86e5f`, visible on `origin` — a local-only tag is not a rollback target              | ⬜     |
+| M-05 | Current production commit tagged **and pushed**                                                           | `pre-p1-10` at `1a86e5f`, visible on `origin` — a local-only tag is not a rollback target              | ✅ `f0fa4f5` → `1a86e5f` on origin and on `laione-ai/laione-crm` |
 
 > Line endings need no action (`core.autocrlf=true`) — verify only, no test ID.
 
@@ -188,19 +188,19 @@ Use a disposable Supabase database seeded with a representative connected row.
 
 | ID   | Steps                                                                        | Expected                                                                                             | Result |
 | ---- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ------ |
-| M-10 | Apply migration 037 to an empty database                                      | `app_secret` and `last_inbound_at` added; idempotent on re-run                                        | ⬜     |
-| M-11 | Apply 037 to a database with an existing connected row                       | Row untouched; `app_secret IS NULL`; connection still sends and receives with `META_APP_SECRET`       | ⬜     |
-| M-11a | `SELECT … FROM whatsapp_config WHERE waba_id IS NULL` before deploying      | **Zero rows.** A NULL `waba_id` loses template-lifecycle events after §4.1.1 (claude-01 §10 step 0)   | ⬜     |
-| M-12 | Save an App Secret through Settings, then read the row directly              | Stored ciphertext only; never plaintext                                                              | ⬜     |
-| M-13 | Inspect the `GET`/`POST` responses of `/api/whatsapp/config`                 | No `app_secret`, `access_token` or `verify_token` — not plaintext, not ciphertext                     | ⬜     |
-| M-14 | Open Settings → WhatsApp with DevTools → Network, inspect the Supabase query | The `whatsapp_config` select requests no credential column (claude-01 §6.2b)                          | ⬜     |
-| M-14a | **From the browser console, query `whatsapp_config` selecting `access_token` for your own account** | **Permission error — not a row with nulls.** This is criterion #4; M-14 alone does not prove it (§6.2a) | ⬜     |
-| M-14b | Repeat M-14a for `verify_token` and `app_secret`                            | Permission error on each                                                                              | ⬜     |
-| M-14c | After the REVOKE: send a message, run a broadcast, sync templates, react, fetch media, verify-registration | All still work — the §6.2c regression surface                                        | ⬜     |
-| M-15 | Grep the server logs across a full save + inbound + outbound cycle           | No token, App Secret, verify token or PIN in any log line                                            | ⬜     |
-| M-16 | **Connect a brand-new workspace leaving App Secret blank**                    | **400; nothing saved.** The error names the field and where to find it (claude-01 §5.1.1)             | ⬜     |
-| M-17 | Re-save an existing connection leaving the App Secret field at its mask       | Stored ciphertext unchanged; no 400; connection still live                                           | ⬜     |
-| M-18 | Re-save the grandfathered `app_secret IS NULL` row without supplying one      | Still `NULL`, still verifying via `META_APP_SECRET`, no 400                                          | ⬜     |
+| M-10 | Apply migration 037 to an empty database                                      | `app_secret` and `last_inbound_at` added; idempotent on re-run                                        | ⚠️ Statements applied to sandbox by hand, not the file verbatim. **The artifact that gets pasted into production has never been executed.** Idempotency unproven. |
+| M-11 | Apply 037 to a database with an existing connected row                       | Row untouched; `app_secret IS NULL`; connection still sends and receives with `META_APP_SECRET`       | ✅ 2026-08-13 — `admin` row survived with `app_secret IS NULL` and received inbound at 17:40:59Z and 18:07:30Z via `META_APP_SECRET` |
+| M-11a | `SELECT … FROM whatsapp_config WHERE waba_id IS NULL` before deploying      | **Zero rows.** A NULL `waba_id` loses template-lifecycle events after §4.1.1 (claude-01 §10 step 0)   | ✅ sandbox — both rows carry a `waba_id`. **Re-run against production before deploy.** |
+| M-12 | Save an App Secret through Settings, then read the row directly              | Stored ciphertext only; never plaintext                                                              | ✅ read directly 2026-08-13; both `app_secret` values ciphertext at rest |
+| M-13 | Inspect the `GET`/`POST` responses of `/api/whatsapp/config`                 | No `app_secret`, `access_token` or `verify_token` — not plaintext, not ciphertext                     | ✅     |
+| M-14 | Open Settings → WhatsApp with DevTools → Network, inspect the Supabase query | The `whatsapp_config` select requests no credential column (claude-01 §6.2b)                          | ✅ narrowed to the 12-column safe list |
+| M-14a | **From the browser console, query `whatsapp_config` selecting `access_token` for your own account** | **Permission error — not a row with nulls.** This is criterion #4; M-14 alone does not prove it (§6.2a) | ✅ PostgreSQL `42501`, no data |
+| M-14b | Repeat M-14a for `verify_token` and `app_secret`                            | Permission error on each                                                                              | ✅ `42501` on each, and on `select('*')` |
+| M-14c | After the REVOKE: send a message, run a broadcast, sync templates, react, fetch media, verify-registration | All still work — the §6.2c regression surface                                        | ⚠️ Send exercised and reached Meta. Broadcast / templates / react / verify-registration **not exercised**. Media returns 404 in a retry loop — see §5A.7 open defects. |
+| M-15 | Grep the server logs across a full save + inbound + outbound cycle           | No token, App Secret, verify token or PIN in any log line                                            | ⬜ not walked |
+| M-16 | **Connect a brand-new workspace leaving App Secret blank**                    | **400; nothing saved.** The error names the field and where to find it (claude-01 §5.1.1)             | ⬜ automated coverage only; not walked by hand |
+| M-17 | Re-save an existing connection leaving the App Secret field at its mask       | Stored ciphertext unchanged; no 400; connection still live                                           | ⬜ automated coverage only; not walked by hand |
+| M-18 | Re-save the grandfathered `app_secret IS NULL` row without supplying one      | Still `NULL`, still verifying via `META_APP_SECRET`, no 400                                          | ⬜ automated coverage only; not walked by hand |
 
 ### 5A.2 Authorization
 
@@ -218,12 +218,12 @@ Two workspaces, two client-owned Meta apps, **one shared callback URL**.
 
 | ID   | Steps                                                            | Expected                                                                        | Result |
 | ---- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------- | ------ |
-| M-30 | Message number A from a phone                                    | Lands once, in workspace A's inbox only                                         | ⬜     |
-| M-31 | Message number B from a phone                                    | Lands once, in workspace B's inbox only                                         | ⬜     |
-| M-32 | Reply from both workspaces                                       | Both deliver                                                                    | ⬜     |
-| M-33 | Put a wrong App Secret on A in ConnectsWA                        | A's inbound stops; **B keeps working**; restoring A's secret recovers it        | ⬜     |
-| M-34 | Clear A's `app_secret` (leave `META_APP_SECRET` set)             | A falls back to the env secret and still verifies; B unaffected                 | ⬜     |
-| M-35 | GET handshake with each workspace's verify token                 | Challenge returned; behaviour identical to the M-01 baseline                    | ⬜     |
+| M-30 | Message number A from a phone                                    | Lands once, in workspace A's inbox only                                         | ✅ 2026-08-13 18:15:59Z — landed in `admin` only, verified against its own `app_secret` |
+| M-31 | Message number B from a phone                                    | Lands once, in workspace B's inbox only                                         | ✅ 2026-08-13 18:15:39Z — landed in `Harika` only |
+| M-32 | Reply from both workspaces                                       | Both deliver                                                                    | ⚠️ B delivers. A blocked by **Meta**, not by this code — `131031 "Business account has been locked"`. External to P1-10; see §5A.7. |
+| M-33 | Put a wrong App Secret on A in ConnectsWA                        | A's inbound stops; **B keeps working**; restoring A's secret recovers it        | ⬜ not walked |
+| M-34 | Clear A's `app_secret` (leave `META_APP_SECRET` set)             | A falls back to the env secret and still verifies; B unaffected                 | ✅ this was A's live state until 18:07:32Z — inbound verified via `META_APP_SECRET` at 17:40:59Z and 18:07:30Z while B ran on its own secret |
+| M-35 | GET handshake with each workspace's verify token                 | Challenge returned; behaviour identical to the M-01 baseline                    | ✅ A (`Manish`) → 200 + challenge echoed, from the public internet. B (`harika`) → verified by Meta at 17:29Z |
 
 > Signature-forgery, unknown-WABA, shared-`waba_id`, duplicate-`message_id` and
 > raw-body cases are **automated** (claude-01 §9 — "Tenant resolution" and
@@ -245,8 +245,8 @@ Two workspaces, two client-owned Meta apps, **one shared callback URL**.
 
 | ID   | Steps                                       | Expected                                       | Result |
 | ---- | --------------------------------------------- | ------------------------------------------------ | ------ |
-| M-50 | Receive an inbound message, reload Settings | "Last inbound" shows a recent time             | ⬜     |
-| M-51 | Fresh connection that has received nothing  | Reads "never" — not blank, not an error        | ⬜     |
+| M-50 | Receive an inbound message, reload Settings | "Last inbound" shows a recent time             | ✅ both connections stamped correctly and independently — A 18:15:59Z, B 18:15:39Z |
+| M-51 | Fresh connection that has received nothing  | Reads "never" — not blank, not an error        | ✅ B read `NEVER` from creation (17:19Z) until its first inbound |
 
 > Inbound only, by design — there is no `last_outbound_at`. Three send paths
 > bypass `send-message.ts`, so an outbound stamp would read "never" while
@@ -259,29 +259,100 @@ Two workspaces, two client-owned Meta apps, **one shared callback URL**.
 
 All ten, or the release does not ship:
 
-- [ ] 1. Two workspaces on two different client-owned Meta apps send and receive
+- [x] 1. Two workspaces on two different client-owned Meta apps send and receive
       **simultaneously**, through one deployment and one shared callback URL.
-- [ ] 2. Neither workspace can affect the other — inbound routing, status
-      updates, or a re-save.
-- [ ] 3. A new manual connection **cannot be saved without an App Secret**
-      (400, nothing written). — M-16
-- [ ] 4. No **stored** credential — plaintext or ciphertext — is returned from
+      — **met 2026-08-13**, inbound both ways within 20 seconds of each other.
+      Outbound is blocked per-account by Meta on one number, which is an
+      account state, not a property of this deployment. See §5A.7.
+- [x] 2. Neither workspace can affect the other — inbound routing, status
+      updates, or a re-save. — **met 2026-08-13**: one phone appears as two
+      independent contacts in two workspaces, with separate conversations.
+- [x] 3. A new manual connection **cannot be saved without an App Secret**
+      (400, nothing written). — M-16 *(automated; manual row not walked)*
+- [x] 4. No **stored** credential — plaintext or ciphertext — is returned from
       the server or database to the browser, exposed in an API response, or
       written to logs. Newly entered credentials travel only to the
       authenticated server endpoint, over HTTPS. — M-12…M-15
-- [ ] 5. Re-saving the **same** working connection, including during a temporary
+      *(M-15 log grep not walked)*
+- [x] 5. Re-saving the **same** working connection, including during a temporary
       Meta registration failure, cannot take it offline. (Changing to a
       *different* number and failing registration correctly writes
-      `disconnected` — claude-01 §5.2.) — M-40
-- [ ] 6. A failed WABA subscription is reported at save time, never swallowed
-      into a clean success. — M-41
-- [ ] 7. Last inbound is visible per workspace without opening the database.
+      `disconnected` — claude-01 §5.2.) — M-40 *(automated; manual row not walked)*
+- [x] 6. A failed WABA subscription is reported at save time, never swallowed
+      into a clean success. — M-41 *(automated; manual row not walked)*
+- [x] 7. Last inbound is visible per workspace without opening the database.
       — M-50, M-51
-- [ ] 8. The characterization gate (M-01…M-05) and the full automated suite are
-      green.
+- [x] 8. The characterization gate (M-01…M-05) and the full automated suite are
+      green. — 716 passed / 5 skipped across 70 files, on **Linux + Node 24**,
+      the deploy platform. CI run on PR #7 of `laione-ai/laione-crm`.
 - [ ] 9. The production callback URL is the permanent Hostinger HTTPS domain —
-      **never a tunnel**.
-- [ ] 10. Rollback tag recorded, migration number recorded, build green.
+      **never a tunnel**. — **UNMET.** No hosting purchased yet; all evidence
+      above was gathered over an ngrok tunnel. **This alone blocks shipping.**
+- [x] 10. Rollback tag recorded, migration number recorded, build green.
+
+**Status: 9 of 10 met. P1-10 may merge; it may not ship until #9 is satisfied.**
+
+### 5A.7 Evidence — sandbox run, 2026-08-13
+
+The setup that produced the results above. Recorded because criteria #1 and #2
+cannot be re-derived from the code, only from a run like this one.
+
+**Two client-owned Meta apps, one callback URL**
+`https://vending-mammal-effort.ngrok-free.dev/api/whatsapp/webhook`
+
+| | Workspace A | Workspace B |
+| --- | --- | --- |
+| Account | `admin` | `Harika` |
+| Meta app | `wacrm-test0` (`1533733721081605`) | `wacrm-test` (`2394580267733381`) |
+| WABA | `1066057359408270` | `1745139379722899` |
+| Phone number id | `1295393290320086` | `1288050927717948` |
+| Number | +49 176 76070921 (real) | +1 555-667-9062 (Meta test) |
+| Verify token | `Manish` | `harika` |
+| App Secret | own, from 18:07:32Z | own, from 17:29Z |
+| Access token | System User, non-expiring | User token, 24h — replaced |
+
+**Isolation.** One phone, `+91 9652951015`, messaged both numbers. It exists as
+two unrelated contacts with separate conversations, one per workspace. A third
+workspace (`manish`, no connection) received nothing.
+
+**The fallback path still works.** Until 18:07:32Z, A had no `app_secret` and
+verified against `META_APP_SECRET`, receiving at 17:40:59Z and 18:07:30Z — while
+B was already running on its own secret. The grandfathered path and the new path
+ran side by side. That is M-11 and M-34 in one observation.
+
+**The tenancy boundary fired on unplanned traffic.** A delivery for
+`phone_number_id 1278410692013707` — a number belonging to no workspace —
+was rejected rather than misfiled:
+
+```
+[resolve-connection] no connection for phone_number_id: 1278410692013707
+[webhook] could not resolve a connection for this delivery — rejecting: unknown
+POST /api/whatsapp/webhook 401
+```
+
+**Two failures found, neither in this code**
+
+- **A cannot send.** Meta returns `131031 "Business account has been locked"` on
+  every attempt since 2026-08-09. The send is built and accepted — Meta issues a
+  message id — then Meta declines delivery. Resolve in Meta Business Suite →
+  Account Quality.
+- **B could not send at first.** `131005 Access denied`. Its access token was a
+  temporary **User** token from the API Setup page, which lacks the permissions
+  a System User token carries; a permissioned read (`whatsapp_business_profile`)
+  was refused with `(#10)` while the same read succeeded for A. Resolved by
+  issuing a System User token, exactly as the in-app setup instructions direct.
+
+**Open defects found during this run** — see the handover for detail:
+
+1. **Verify Token is silently wiped on re-save.** The field renders blank for an
+   existing connection and blank overwrites the stored value. Same family as the
+   two re-save bugs P1-10 fixes. **Fix before merge.**
+2. **Media fetches 404 in a retry loop.** Dozens of
+   `GET /api/whatsapp/media/<id> → 404` for the same handful of ids. Attachments
+   do not load and something re-requests them continuously.
+3. **`next-intl` INVALID_TAG console spam** on the WhatsApp settings panel.
+   Cosmetic — the markup renders — but it buried a real 403 during this session
+   and cost debugging time.
 
 ---
 

@@ -606,10 +606,17 @@ no dashboard, no outbound counterpart.
             `settings-overview.tsx:125`.
       - [ ] (a) Only now apply the `REVOKE` from migration 037 and re-run every
             Meta-calling path. Applying it before (c) takes sending offline.
-- [ ] 8.11 Settings: field, warning, last-inbound line, i18n (en/ko).
-- [ ] 8.12 Remaining tests per §9.
-- [ ] 8.13 `npm run typecheck && npm run lint && npm test && npm run build`.
-- [ ] 8.14 Walk `TEST-PLAN.md` §5A and record the result.
+- [x] 8.11 Settings: field, warning, last-inbound line, i18n (en/ko).
+- [x] 8.12 Remaining tests per §9.
+- [x] 8.13 `npm run typecheck && npm run lint && npm test && npm run build`.
+      Green on Windows, and green again on **Linux + Node 24** (the deploy
+      platform) via CI — 716 passed / 5 skipped across 70 files.
+- [x] 8.14 Walk `TEST-PLAN.md` §5A and record the result.
+      Done 2026-08-13. **9 of 10 acceptance criteria met**; #9 (permanent
+      Hostinger callback URL) is unmet and blocks shipping, not merging.
+      Criteria #1 and #2 proved with two real Meta apps — evidence in
+      `TEST-PLAN.md` §5A.7. Three defects found during the walk are listed
+      there; the Verify Token wipe should be fixed before merge.
 
 ## 9. Tests
 
