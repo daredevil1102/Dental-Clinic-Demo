@@ -367,6 +367,68 @@ describe('POST /api/whatsapp/config — App Secret requirement (§5.1.1)', () =>
     expect(update.payload).not.toHaveProperty('app_secret')
   })
 
+  it('preserves the stored verify_token when an EXISTING connection is re-saved without one', async () => {
+    // The regression: the browser rendered this field blank for an existing
+    // connection and submitted it as null, so any save — rotating the access
+    // token, fixing a typo in the WABA id — erased a working verify token.
+    // Nothing failed until Meta next re-verified the callback URL, long after.
+    h.state.existing = {
+      id: 'cfg-1',
+      phone_number_id: 'PNID-1',
+      registered_at: '2026-01-01T00:00:00.000Z',
+    }
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const update = (h.calls.updates.whatsapp_config ?? [])[0]
+    expect(update.payload).not.toHaveProperty('verify_token')
+  })
+
+  it('does not let a blank verify_token erase the stored one', async () => {
+    // Absent and blank must behave identically. Deleting a stored token needs
+    // an explicit control; an empty box is not one.
+    h.state.existing = {
+      id: 'cfg-1',
+      phone_number_id: 'PNID-1',
+      registered_at: '2026-01-01T00:00:00.000Z',
+    }
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      verify_token: '   ',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const update = (h.calls.updates.whatsapp_config ?? [])[0]
+    expect(update.payload).not.toHaveProperty('verify_token')
+  })
+
+  it('updates the stored verify_token when an existing connection submits a new one', async () => {
+    h.state.existing = {
+      id: 'cfg-1',
+      phone_number_id: 'PNID-1',
+      registered_at: '2026-01-01T00:00:00.000Z',
+    }
+
+    const res = await postConfig({
+      phone_number_id: 'PNID-1',
+      access_token: 'ACCESS-TOKEN',
+      verify_token: '  ROTATED-VERIFY  ',
+      pin: '123456',
+    })
+    expect(res.status).toBe(200)
+
+    const update = (h.calls.updates.whatsapp_config ?? [])[0]
+    expect(decrypt(update.payload.verify_token as string)).toBe('ROTATED-VERIFY')
+  })
+
   it('updates the stored app_secret when an existing connection submits a new one', async () => {
     h.state.existing = {
       id: 'cfg-1',

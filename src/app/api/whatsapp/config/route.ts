@@ -302,7 +302,10 @@ export async function POST(request: Request) {
     let encryptedAppSecret: string | null
     try {
       encryptedAccessToken = encrypt(access_token)
-      encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
+      encryptedVerifyToken =
+        typeof verify_token === 'string' && verify_token.trim()
+          ? encrypt(verify_token.trim())
+          : null
       encryptedAppSecret = submittedAppSecret ? encrypt(submittedAppSecret) : null
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown encryption error'
@@ -412,7 +415,6 @@ export async function POST(request: Request) {
       phone_number_id,
       waba_id: waba_id || null,
       access_token: encryptedAccessToken,
-      verify_token: encryptedVerifyToken,
       subscribed_apps_at: subscribedAppsAt ?? null,
       last_registration_error: registrationError,
       updated_at: new Date().toISOString(),
@@ -433,6 +435,21 @@ export async function POST(request: Request) {
     // always present — the guard above rejects a create without one.
     if (encryptedAppSecret) {
       baseRow.app_secret = encryptedAppSecret
+    }
+
+    // Same contract for the verify token, and for the same reason. It used to
+    // be written on every save as `verify_token || null`, while the browser
+    // rendered the field blank for an existing connection — so a save that
+    // changed something else entirely erased a working token. Meta only reads
+    // it when re-verifying a callback URL, so nothing failed until the next
+    // re-verification, long after the save that caused it.
+    //
+    // Absent therefore means unchanged. A verify token is optional in the
+    // domain (unlike the App Secret, which is required on create), so there is
+    // no guard here — only the omission. Clearing a stored token deliberately
+    // would need an explicit control; a blank box must not be one.
+    if (encryptedVerifyToken) {
+      baseRow.verify_token = encryptedVerifyToken
     }
 
     if (existing) {
