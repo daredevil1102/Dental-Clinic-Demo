@@ -69,6 +69,7 @@ export function WhatsAppConfig() {
   const [wabaId, setWabaId] = useState('');
   const [accessToken, setAccessToken] = useState('');
   const [verifyToken, setVerifyToken] = useState('');
+  const [verifyTokenEdited, setVerifyTokenEdited] = useState(false);
   const [pin, setPin] = useState('');
   const [tokenEdited, setTokenEdited] = useState(false);
   // Write-only, like the access token: the server never sends it back, so the
@@ -140,7 +141,13 @@ export function WhatsAppConfig() {
         setPhoneNumberId(data.phone_number_id || '');
         setWabaId(data.waba_id || '');
         setAccessToken(MASKED_CREDENTIAL);
-        setVerifyToken('');
+        // Masked, not blank. A blank box used to be submitted as `null` on the
+        // next save, silently erasing a working verify token — invisible until
+        // a webhook re-verification failed. Same contract as the App Secret:
+        // untouched means keep. The narrowed select cannot tell us whether one
+        // is stored, so mask unconditionally on an existing connection.
+        setVerifyToken(MASKED_CREDENTIAL);
+        setVerifyTokenEdited(false);
         setPin('');
         setTokenEdited(false);
         // A stored secret is never sent to the browser; show the mask only if
@@ -155,6 +162,7 @@ export function WhatsAppConfig() {
         setWabaId('');
         setAccessToken('');
         setVerifyToken('');
+        setVerifyTokenEdited(false);
         setPin('');
         setTokenEdited(false);
         setAppSecret('');
@@ -223,6 +231,8 @@ export function WhatsAppConfig() {
       tokenEdited,
       appSecret,
       appSecretEdited,
+      verifyToken,
+      verifyTokenEdited,
     });
 
     if (!credentialResult.ok) {
@@ -246,7 +256,6 @@ export function WhatsAppConfig() {
       const payload: Record<string, unknown> = {
         phone_number_id: phoneNumberId.trim(),
         waba_id: wabaId.trim() || null,
-        verify_token: verifyToken.trim() || null,
         // Optional — only sent when the user filled it in. The server
         // requires it on first save or when changing numbers; for a
         // simple token rotation, leaving it blank skips re-register.
@@ -393,6 +402,7 @@ export function WhatsAppConfig() {
       setWabaId('');
       setAccessToken('');
       setVerifyToken('');
+      setVerifyTokenEdited(false);
       setTokenEdited(false);
       setConnectionStatus('disconnected');
       setResetReason(null);
@@ -732,7 +742,16 @@ export function WhatsAppConfig() {
               <Input
                 placeholder={t('webhookVerifyTokenPlaceholder')}
                 value={verifyToken}
-                onChange={(e) => setVerifyToken(e.target.value)}
+                onChange={(e) => {
+                  setVerifyToken(e.target.value);
+                  setVerifyTokenEdited(true);
+                }}
+                onFocus={() => {
+                  if (verifyToken === MASKED_CREDENTIAL) {
+                    setVerifyToken('');
+                    setVerifyTokenEdited(true);
+                  }
+                }}
                 className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
               />
               <p className="text-xs text-muted-foreground">
