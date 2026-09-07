@@ -12,6 +12,7 @@ import {
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
 import { resolveConnectionForChange } from '@/lib/whatsapp/resolve-connection'
+import { isDentalButtonReply, handleDentalButtonReply } from '@/lib/dental/webhook-handler'
 import type { WhatsAppConfig } from '@/types'
 
 // ---------------------------------------------------------------------------
@@ -730,6 +731,27 @@ async function processMessage(
   })
   const flowConsumed = flowResult.consumed
 
+  // ============================================================
+  // Dental appointment system — intercept dental_ button replies
+  // BEFORE automations. If the dental system handles it, mark as
+  // consumed so keyword_match / interactive_reply automations
+  // don't double-process. Fire-and-forget: dental handler has its
+  // own error handling and never throws.
+  // ============================================================
+  let dentalConsumed = false
+  if (interactiveReplyId && isDentalButtonReply(interactiveReplyId) && !flowConsumed) {
+    try {
+      dentalConsumed = await handleDentalButtonReply(
+        supabaseAdmin(),
+        accountId,
+        message.from, // patient's phone number
+        interactiveReplyId,
+      )
+    } catch (err) {
+      console.error('[dental] webhook handler failed:', err)
+    }
+  }
+
   // Fire any automations that react to this webhook event. All dispatches
   // run here (not earlier) so the contact, conversation, and inbound
   // message all exist before any step — including send_message — runs.
@@ -745,7 +767,7 @@ async function processMessage(
   )[] = []
   // Content-level triggers are suppressed when a flow consumed the
   // message — see the comment block above.
-  if (!flowConsumed) {
+  if (!flowConsumed && !dentalConsumed) {
     automationTriggers.push('new_message_received', 'keyword_match')
     // Interactive tap → fire the interactive_reply trigger too (only
     // meaningful when a button/list reply actually arrived). Enables
