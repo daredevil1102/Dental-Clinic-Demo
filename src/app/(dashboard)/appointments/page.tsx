@@ -98,6 +98,9 @@ function CreateAppointmentDialog({
   const [doctors, setDoctors] = useState<DentalDoctor[]>([])
   const [patients, setPatients] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
+  const [isNewPatient, setIsNewPatient] = useState(false)
+  const [newPatientName, setNewPatientName] = useState('')
+  const [newPatientPhone, setNewPatientPhone] = useState('')
   const [form, setForm] = useState({
     patient_id: '',
     doctor_id: '',
@@ -110,7 +113,6 @@ function CreateAppointmentDialog({
 
   useEffect(() => {
     if (!open) return
-    const supabase = createClient()
     Promise.all([
       fetch('/api/dental/doctors').then((r) => r.json()),
       fetch('/api/dental/patients').then((r) => r.json()),
@@ -124,12 +126,45 @@ function CreateAppointmentDialog({
     e.preventDefault()
     setLoading(true)
     try {
+      let patientId = form.patient_id
+
+      // If creating a new patient, do that first
+      if (isNewPatient) {
+        if (!newPatientName.trim() || !newPatientPhone.trim()) {
+          alert('Please enter patient name and phone number')
+          setLoading(false)
+          return
+        }
+        const patientRes = await fetch('/api/dental/patients', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            full_name: newPatientName.trim(),
+            phone: newPatientPhone.trim(),
+          }),
+        })
+        if (!patientRes.ok) {
+          const err = await patientRes.json()
+          alert(err.error || 'Failed to create patient')
+          setLoading(false)
+          return
+        }
+        const newPatient = await patientRes.json()
+        patientId = newPatient.id
+      }
+
+      if (!patientId) {
+        alert('Please select or create a patient')
+        setLoading(false)
+        return
+      }
+
       const startsAt = new Date(`${form.date}T${form.time}:00`).toISOString()
       const res = await fetch('/api/dental/appointments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          patient_id: form.patient_id,
+          patient_id: patientId,
           doctor_id: form.doctor_id,
           starts_at: startsAt,
           duration_minutes: form.duration_minutes,
@@ -145,6 +180,9 @@ function CreateAppointmentDialog({
       onCreated()
       onClose()
       setForm({ patient_id: '', doctor_id: '', date: '', time: '', duration_minutes: 30, treatment_type: '', notes: '' })
+      setIsNewPatient(false)
+      setNewPatientName('')
+      setNewPatientPhone('')
     } catch (err) {
       alert('Failed to create appointment')
     } finally {
@@ -159,9 +197,39 @@ function CreateAppointmentDialog({
       <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-6 shadow-2xl">
         <h2 className="mb-6 text-xl font-bold text-foreground">New Appointment</h2>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-muted-foreground">Patient</label>
+          {/* Patient section */}
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className="block text-sm font-medium text-muted-foreground">Patient</label>
+              <button
+                type="button"
+                onClick={() => { setIsNewPatient(!isNewPatient); setForm({ ...form, patient_id: '' }) }}
+                className="text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+              >
+                {isNewPatient ? '← Select Existing' : '+ New Patient'}
+              </button>
+            </div>
+
+            {isNewPatient ? (
+              <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-background/50 p-3">
+                <input
+                  type="text"
+                  value={newPatientName}
+                  onChange={(e) => setNewPatientName(e.target.value)}
+                  placeholder="Patient full name"
+                  required
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                />
+                <input
+                  type="tel"
+                  value={newPatientPhone}
+                  onChange={(e) => setNewPatientPhone(e.target.value)}
+                  placeholder="Phone with country code (e.g. +919876543210)"
+                  required
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+                />
+              </div>
+            ) : (
               <select
                 value={form.patient_id}
                 onChange={(e) => setForm({ ...form, patient_id: e.target.value })}
@@ -170,24 +238,26 @@ function CreateAppointmentDialog({
               >
                 <option value="">Select patient...</option>
                 {patients.map((p: any) => (
-                  <option key={p.id} value={p.id}>{p.full_name}</option>
+                  <option key={p.id} value={p.id}>{p.full_name} — {p.phone}</option>
                 ))}
               </select>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-muted-foreground">Doctor</label>
-              <select
-                value={form.doctor_id}
-                onChange={(e) => setForm({ ...form, doctor_id: e.target.value })}
-                required
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
-              >
-                <option value="">Select doctor...</option>
-                {doctors.map((d) => (
-                  <option key={d.id} value={d.id}>{d.full_name}</option>
-                ))}
-              </select>
-            </div>
+            )}
+          </div>
+
+          {/* Doctor */}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-muted-foreground">Doctor</label>
+            <select
+              value={form.doctor_id}
+              onChange={(e) => setForm({ ...form, doctor_id: e.target.value })}
+              required
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="">Select doctor...</option>
+              {doctors.map((d) => (
+                <option key={d.id} value={d.id}>{d.full_name}</option>
+              ))}
+            </select>
           </div>
           <div className="grid grid-cols-3 gap-4">
             <div>
