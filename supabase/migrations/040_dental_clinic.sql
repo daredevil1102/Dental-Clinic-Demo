@@ -12,6 +12,9 @@
 --     Europe/Amsterdam via dental_clinic_config.timezone
 -- ============================================================
 
+-- Required for EXCLUDE USING gist (doctor_id WITH =, ...)
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
 -- -------------------------------------------------------
 -- ENUM: appointment status state machine
 -- -------------------------------------------------------
