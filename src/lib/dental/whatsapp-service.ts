@@ -42,6 +42,19 @@ export interface DentalWhatsAppService {
     phone: string;
     text: string;
   }): Promise<SendResult>;
+
+  sendInteractiveList(params: {
+    accountId: string;
+    phone: string;
+    body: string;
+    buttonLabel: string;
+    header?: string;
+    footer?: string;
+    sections: Array<{
+      title?: string;
+      rows: Array<{ id: string; title: string; description?: string }>;
+    }>;
+  }): Promise<SendResult>;
 }
 
 // -------------------------------------------------------
@@ -110,6 +123,51 @@ export class MockWhatsAppService implements DentalWhatsAppService {
     });
 
     return { messageId: mockId, messageText: params.text };
+  }
+
+  async sendInteractiveList(params: {
+    accountId: string;
+    phone: string;
+    body: string;
+    buttonLabel: string;
+    header?: string;
+    footer?: string;
+    sections: Array<{
+      title?: string;
+      rows: Array<{ id: string; title: string; description?: string }>;
+    }>;
+  }): Promise<SendResult> {
+    const mockId = `mock_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    console.log('[dental:mock] 📱 WhatsApp List Message:');
+    console.log(`  To: ${params.phone}`);
+    if (params.header) console.log(`  Header: ${params.header}`);
+    console.log(`  Body: ${params.body}`);
+    console.log(`  Button: [${params.buttonLabel}]`);
+    for (const section of params.sections) {
+      if (section.title) console.log(`  Section: ${section.title}`);
+      for (const row of section.rows) {
+        console.log(`    - ${row.title}${row.description ? ` (${row.description})` : ''}`);
+      }
+    }
+
+    await this.db.from('dental_message_log').insert({
+      account_id: params.accountId,
+      direction: 'outbound',
+      message_type: 'interactive',
+      content: params.body,
+      interactive_payload: {
+        kind: 'list',
+        header: params.header,
+        footer: params.footer,
+        button_label: params.buttonLabel,
+        sections: params.sections,
+      },
+      whatsapp_message_id: mockId,
+      mock_mode: true,
+    });
+
+    return { messageId: mockId, messageText: params.body };
   }
 }
 
@@ -261,6 +319,85 @@ export class RealWhatsAppService implements DentalWhatsAppService {
       .eq('id', resolved.conversationId);
 
     return { messageId: result.messageId, messageText: params.text };
+  }
+
+  async sendInteractiveList(params: {
+    accountId: string;
+    phone: string;
+    body: string;
+    buttonLabel: string;
+    header?: string;
+    footer?: string;
+    sections: Array<{
+      title?: string;
+      rows: Array<{ id: string; title: string; description?: string }>;
+    }>;
+  }): Promise<SendResult> {
+    const { resolveConversationByPhone } = await import(
+      '@/lib/whatsapp/resolve-conversation'
+    );
+    const { sendInteractiveList } = await import('@/lib/whatsapp/meta-api');
+    const { decrypt } = await import('@/lib/whatsapp/encryption');
+
+    const { data: config } = await this.db
+      .from('whatsapp_config')
+      .select('*')
+      .eq('account_id', params.accountId)
+      .limit(1)
+      .single();
+
+    if (!config) {
+      throw new Error('WhatsApp not configured for this account');
+    }
+
+    const accessToken = decrypt(config.access_token);
+
+    const resolved = await resolveConversationByPhone(
+      this.db,
+      params.accountId,
+      params.phone,
+    );
+
+    const result = await sendInteractiveList({
+      phoneNumberId: config.phone_number_id,
+      accessToken,
+      to: params.phone,
+      bodyText: params.body,
+      buttonLabel: params.buttonLabel,
+      headerText: params.header,
+      footerText: params.footer,
+      sections: params.sections,
+    });
+
+    await this.db.from('messages').insert({
+      conversation_id: resolved.conversationId,
+      user_id: config.user_id,
+      account_id: params.accountId,
+      content_type: 'interactive',
+      content_text: params.body,
+      sender_type: 'bot',
+      message_id: result.messageId,
+      status: 'sent',
+      interactive_payload: {
+        kind: 'list',
+        body: params.body,
+        header: params.header,
+        footer: params.footer,
+        button_label: params.buttonLabel,
+        sections: params.sections,
+      },
+    });
+
+    await this.db
+      .from('conversations')
+      .update({
+        last_message_text: params.body,
+        last_message_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', resolved.conversationId);
+
+    return { messageId: result.messageId, messageText: params.body };
   }
 }
 

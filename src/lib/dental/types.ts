@@ -49,6 +49,8 @@ export interface DentalClinicConfig {
   reminder_followup_interval: number;
   default_duration_minutes: number;
   demo_mode: boolean;
+  /** Master switch for the AI receptionist agent. */
+  agent_enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -148,6 +150,10 @@ export interface DentalAppointment {
   reminder_count: number;
   patient_responded: boolean;
   patient_response_at: string | null;
+  /** How this appointment was created: 'staff' | 'agent' | 'button'. */
+  booked_via: string;
+  /** Stable UID for .ics calendar events — survives reschedules. */
+  calendar_uid: string | null;
   created_at: string;
   updated_at: string;
 
@@ -299,3 +305,53 @@ export const VALID_STATUS_TRANSITIONS: Record<
   completed: [],
   no_show: [],
 };
+
+// -------------------------------------------------------
+// Agent Session
+// -------------------------------------------------------
+
+export type DentalAgentIntent =
+  | 'book'
+  | 'cancel'
+  | 'reschedule'
+  | 'check_status'
+  | 'faq_or_other';
+
+export type DentalAgentState =
+  | 'awaiting_intent'
+  | 'collecting_info'
+  | 'confirming'
+  | 'executing'
+  | 'completed'
+  | 'expired'
+  | 'handed_off';
+
+export interface DentalAgentSessionSlots {
+  doctor_id?: string;
+  doctor_name?: string;
+  treatment_type?: string;
+  preferred_date?: string;
+  preferred_time?: string;
+  appointment_id?: string;
+  offered_options?: Array<{ id: string; label: string; value: string }>;
+  candidate_starts_at?: string;
+  new_doctor_id?: string;
+}
+
+export interface DentalAgentSession {
+  id: string;
+  account_id: string;
+  patient_id: string | null;
+  conversation_id: string | null;
+  phone: string;
+  intent: DentalAgentIntent | null;
+  state: DentalAgentState;
+  slots: DentalAgentSessionSlots;
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  turn_count: number;
+  last_message_id: string | null;
+  expires_at: string;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}

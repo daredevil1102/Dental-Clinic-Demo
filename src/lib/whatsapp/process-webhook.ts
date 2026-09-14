@@ -752,12 +752,48 @@ async function processMessage(
     }
   }
 
+  const inboundText = contentText ?? message.text?.body ?? ''
+
+  // ============================================================
+  // Dental AI receptionist — free-text intent handling.
+  //
+  // Only fires when:
+  //   1. The account has dental_clinic_config.agent_enabled = true
+  //   2. The message is free text (not an interactive button reply)
+  //   3. No Flow consumed it
+  //   4. No dental button handler consumed it
+  //
+  // Cheap early-exit: one indexed maybeSingle() on dental_clinic_config.
+  // Non-dental tenants pay ~1ms for this check.
+  //
+  // When consumed, suppresses BOTH automations AND generic AI
+  // auto-reply — the dental agent is the sole responder.
+  // ============================================================
+  let dentalAgentConsumed = false
+  if (!flowConsumed && !dentalConsumed && !interactiveReplyId && inboundText.trim()) {
+    try {
+      const { dispatchInboundToDentalAgent } = await import(
+        '@/lib/dental/agent/dispatch'
+      )
+      dentalAgentConsumed = await dispatchInboundToDentalAgent({
+        accountId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        phone: message.from,
+        text: inboundText,
+        configOwnerUserId,
+        waMessageId: message.id,
+      })
+    } catch (err) {
+      console.error('[dental agent] dispatch failed:', err)
+    }
+  }
+
   // Fire any automations that react to this webhook event. All dispatches
   // run here (not earlier) so the contact, conversation, and inbound
   // message all exist before any step — including send_message — runs.
   // Fire-and-forget: a slow or failing automation must not block the
   // webhook's 200 OK response to Meta.
-  const inboundText = contentText ?? message.text?.body ?? ''
   const automationTriggers: (
     | 'new_contact_created'
     | 'first_inbound_message'
@@ -767,7 +803,7 @@ async function processMessage(
   )[] = []
   // Content-level triggers are suppressed when a flow consumed the
   // message — see the comment block above.
-  if (!flowConsumed && !dentalConsumed) {
+  if (!flowConsumed && !dentalConsumed && !dentalAgentConsumed) {
     automationTriggers.push('new_message_received', 'keyword_match')
     // Interactive tap → fire the interactive_reply trigger too (only
     // meaningful when a button/list reply actually arrived). Enables
@@ -805,7 +841,7 @@ async function processMessage(
   // the account has enabled it. Awaited inside `after()` (same reason as
   // the webhook dispatch below); `dispatchInboundToAiReply` owns its
   // eligibility gates + try/catch and never throws.
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+  if (!flowConsumed && !dentalAgentConsumed && !interactiveReplyId && inboundText.trim()) {
     await dispatchInboundToAiReply({
       accountId,
       conversationId: conversation.id,

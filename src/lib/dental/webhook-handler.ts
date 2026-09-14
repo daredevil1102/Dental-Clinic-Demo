@@ -469,52 +469,24 @@ async function handleRescheduleConfirm(
 
   const oldAppointment = session.appointment;
   const newStartsAt = new Date(session.new_starts_at);
-  const newEndsAt = new Date(newStartsAt.getTime() + oldAppointment.duration_minutes * 60_000);
 
   try {
-    // Create new appointment
-    const { data: newAppt, error: createErr } = await db
-      .from('dental_appointments')
-      .insert({
-        account_id: accountId,
-        user_id: oldAppointment.user_id,
-        patient_id: oldAppointment.patient_id,
-        doctor_id: oldAppointment.doctor_id,
-        starts_at: newStartsAt.toISOString(),
-        ends_at: newEndsAt.toISOString(),
-        duration_minutes: oldAppointment.duration_minutes,
-        status: 'confirmed',
-        treatment_type: oldAppointment.treatment_type,
-        notes: oldAppointment.notes,
-        rescheduled_from_id: oldAppointment.id,
-        confirmed_at: new Date().toISOString(),
-        patient_responded: true,
-        patient_response_at: new Date().toISOString(),
-      })
-      .select()
-      .single();
+    const { commitReschedule } = await import('./reschedule');
+    const { newAppointment } = await commitReschedule({
+      db,
+      accountId,
+      oldAppointment,
+      newStartsAt,
+      config,
+      actor: 'patient',
+      bookedVia: 'button',
+    });
 
-    if (createErr) throw createErr;
-
-    // Mark old appointment as rescheduled
-    await db
-      .from('dental_appointments')
-      .update({
-        status: 'rescheduled',
-        rescheduled_to_id: newAppt.id,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', oldAppointment.id);
-
-    // Complete the session
+    // Complete the reschedule session
     await db
       .from('dental_reschedule_sessions')
       .update({ step: 'completed', completed_at: new Date().toISOString() })
       .eq('id', session.id);
-
-    // Schedule reminders for new appointment
-    const { scheduleRemindersForAppointment } = await import('./reminder-service');
-    await scheduleRemindersForAppointment(db, newAppt, config);
 
     const dateStr = formatInClinicTimezone(session.new_starts_at, config.clinic_timezone, {
       weekday: 'long', month: 'long', day: 'numeric',

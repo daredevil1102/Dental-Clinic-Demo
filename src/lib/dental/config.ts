@@ -15,9 +15,10 @@ export const DENTAL_DEFAULTS = {
   clinic_timezone: 'Europe/Amsterdam',
   reminder_initial_minutes: 720,    // 12 hours
   reminder_final_minutes: 120,      // 2 hours
-  reminder_followup_interval: 180,  // 3 hours
+  reminder_followup_interval: 180,  // 3 hours between follow-ups
   default_duration_minutes: 30,
   demo_mode: true,
+  agent_enabled: false,
 } as const;
 
 /**
@@ -52,6 +53,7 @@ export async function loadClinicConfig(
       reminder_followup_interval: DENTAL_DEFAULTS.reminder_followup_interval,
       default_duration_minutes: DENTAL_DEFAULTS.default_duration_minutes,
       demo_mode: DENTAL_DEFAULTS.demo_mode,
+      agent_enabled: DENTAL_DEFAULTS.agent_enabled,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
