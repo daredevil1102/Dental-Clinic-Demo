@@ -122,6 +122,13 @@ export async function runAgentTurn(
   const patientId = patient?.id ?? null;
   const patientName = patient?.full_name ?? undefined;
 
+  // Detect if the patient's name is just a phone number placeholder.
+  // This happens when a new patient is auto-registered from a WACRM contact
+  // that has no name set — the phone number is used as a fallback.
+  const nameIsPlaceholder = patientName
+    ? /^\+?[\d\s\-()]+$/.test(patientName.trim())
+    : false;
+
   // Load patient's upcoming appointments
   let patientAppointments: DentalAppointment[] = [];
   if (patientId) {
@@ -171,6 +178,7 @@ export async function runAgentTurn(
     patientAppointments,
     doctors: doctors ?? [],
     patientName,
+    nameIsPlaceholder,
   });
 
   // Start with the system message

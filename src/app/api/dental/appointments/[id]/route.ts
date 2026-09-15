@@ -1,6 +1,7 @@
 // Individual appointment — get, update, delete
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { dentalAdmin } from '@/lib/dental/admin-client';
 import { getAppointment, transitionAppointment } from '@/lib/dental/appointment-service';
 
 export async function GET(
@@ -19,7 +20,9 @@ export async function GET(
     .single();
   if (!profile) return NextResponse.json({ error: 'No profile' }, { status: 403 });
 
-  const appointment = await getAppointment(supabase, profile.account_id, id);
+  // Use the service-role admin client so agent-created appointments are visible
+  const db = dentalAdmin();
+  const appointment = await getAppointment(db, profile.account_id, id);
   if (!appointment) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   return NextResponse.json(appointment);

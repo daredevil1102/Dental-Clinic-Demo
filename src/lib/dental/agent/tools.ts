@@ -135,6 +135,21 @@ export const DENTAL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'update_patient_name',
+    description:
+      'Update the patient\'s full name. Call this when a new patient provides their name for the first time, especially when their current name on file is just a phone number.',
+    parameters: {
+      type: 'object',
+      properties: {
+        full_name: {
+          type: 'string',
+          description: 'The patient\'s full name as they provided it',
+        },
+      },
+      required: ['full_name'],
+    },
+  },
+  {
     name: 'transfer_to_human',
     description:
       'Hand this conversation to a human staff member. Use when: the patient explicitly asks for a human, you cannot confidently help, or after repeated failures.',
@@ -557,6 +572,57 @@ export async function executeTool(
           }
           return errorResult(toolCall, `Reschedule failed: ${message}`);
         }
+      }
+
+      // ====================================================
+      // update_patient_name
+      // ====================================================
+      case 'update_patient_name': {
+        const fullName = (args.full_name as string)?.trim();
+        if (!fullName) {
+          return errorResult(toolCall, 'full_name is required');
+        }
+
+        if (!patientId) {
+          return errorResult(toolCall, 'No patient record found to update.');
+        }
+
+        // Update the dental_patients record
+        const { error: updateErr } = await db
+          .from('dental_patients')
+          .update({ full_name: fullName, updated_at: new Date().toISOString() })
+          .eq('id', patientId)
+          .eq('account_id', accountId);
+
+        if (updateErr) {
+          console.error('[dental agent] update_patient_name error:', updateErr);
+          return errorResult(toolCall, 'Failed to update patient name.');
+        }
+
+        // Also sync the linked WACRM contact name if one exists
+        const { data: patient } = await db
+          .from('dental_patients')
+          .select('contact_id')
+          .eq('id', patientId)
+          .maybeSingle();
+
+        if (patient?.contact_id) {
+          await db
+            .from('contacts')
+            .update({ name: fullName })
+            .eq('id', patient.contact_id);
+        }
+
+        return {
+          result: {
+            tool_call_id: toolCall.id,
+            name: toolCall.name,
+            content: JSON.stringify({
+              success: true,
+              updated_name: fullName,
+            }),
+          },
+        };
       }
 
       // ====================================================

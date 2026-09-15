@@ -18,6 +18,8 @@ interface PromptContext {
   doctors: DentalDoctor[];
   /** Patient's display name (if known). */
   patientName?: string;
+  /** True when the patient's name on file is just their phone number (new patient). */
+  nameIsPlaceholder?: boolean;
 }
 
 /**
@@ -30,7 +32,7 @@ interface PromptContext {
  *   3. Anti-hallucination clause (appointments, times, providers)
  */
 export function buildDentalAgentPrompt(ctx: PromptContext): string {
-  const { config, patientAppointments, doctors, patientName } = ctx;
+  const { config, patientAppointments, doctors, patientName, nameIsPlaceholder } = ctx;
   const parts: string[] = [];
 
   // -------------------------------------------------------
@@ -67,7 +69,15 @@ export function buildDentalAgentPrompt(ctx: PromptContext): string {
   // Patient context (if known)
   // -------------------------------------------------------
   if (patientName) {
-    parts.push(`You are speaking with: ${patientName}`);
+    if (nameIsPlaceholder) {
+      parts.push(
+        `You are speaking with a NEW patient whose name is not yet on file (currently stored as their phone number: "${patientName}"). ` +
+        `IMPORTANT: Before doing anything else, greet them warmly and ask for their full name. ` +
+        `Once they provide it, immediately call update_patient_name with their name before proceeding with their request.`,
+      );
+    } else {
+      parts.push(`You are speaking with: ${patientName}`);
+    }
   }
 
   if (patientAppointments.length > 0) {
@@ -102,6 +112,7 @@ export function buildDentalAgentPrompt(ctx: PromptContext): string {
     'cheap, fast, and also re-validates that the slot is still open. Never hand off a conversation solely ' +
     'because you lost track of a previously-offered time.\n\n' +
     'When booking:\n' +
+    '0. If the patient\'s name is not on file (flagged above), ask for their full name FIRST and call update_patient_name before proceeding\n' +
     '1. Ask what they need (treatment type / reason for visit)\n' +
     '2. Ask if they have a provider preference (or offer the list)\n' +
     '3. Check real availability using get_provider_availability\n' +

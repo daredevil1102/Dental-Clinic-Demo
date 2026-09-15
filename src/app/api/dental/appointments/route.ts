@@ -1,6 +1,7 @@
 // Dental appointments — list + create
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { dentalAdmin } from '@/lib/dental/admin-client';
 import { listAppointments, createAppointment } from '@/lib/dental/appointment-service';
 import type { DentalAppointmentStatus } from '@/lib/dental/types';
 
@@ -16,8 +17,14 @@ export async function GET(request: Request) {
     .single();
   if (!profile) return NextResponse.json({ error: 'No profile' }, { status: 403 });
 
+  // Use the service-role admin client for the query so that appointments
+  // created by the AI agent (which bypasses RLS) are always visible.
+  // Authentication and account membership are verified above via the
+  // RLS-scoped client.
+  const db = dentalAdmin();
+
   const { searchParams } = new URL(request.url);
-  const result = await listAppointments(supabase, profile.account_id, {
+  const result = await listAppointments(db, profile.account_id, {
     doctor_id: searchParams.get('doctor_id') ?? undefined,
     patient_id: searchParams.get('patient_id') ?? undefined,
     status: (searchParams.get('status') as DentalAppointmentStatus | null) ?? undefined,
@@ -55,3 +62,4 @@ export async function POST(request: Request) {
     );
   }
 }
+
