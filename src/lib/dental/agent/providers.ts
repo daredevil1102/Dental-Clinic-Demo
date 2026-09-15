@@ -15,7 +15,6 @@ import {
   normalizeUsage,
   providerHttpError,
   toNetworkError,
-  mergeConsecutive,
 } from '@/lib/ai/providers/shared';
 import { MAX_OUTPUT_TOKENS } from '@/lib/ai/defaults';
 import type {
@@ -90,12 +89,41 @@ function toOpenAiTools(
   }));
 }
 
+function isReasoningModel(modelName: string): boolean {
+  const lower = modelName.toLowerCase();
+  return (
+    lower.includes('gpt-5') ||
+    lower.includes('luna') ||
+    lower.includes('o1') ||
+    lower.includes('o3') ||
+    lower.includes('o4')
+  );
+}
+
 export async function generateWithToolsOpenAi(
   args: ToolCallingArgs,
 ): Promise<ToolCallingResult> {
   const { apiKey, model, messages, tools, timeoutMs } = args;
 
+  const buildBody = (includeReasoningNone: boolean) => {
+    const body: Record<string, unknown> = {
+      model,
+      messages: toOpenAiMessages(messages),
+      tools: toOpenAiTools(tools),
+      max_completion_tokens: MAX_OUTPUT_TOKENS,
+    };
+    if (includeReasoningNone) {
+      body.reasoning_effort = 'none';
+    }
+    return body;
+  };
+
+  // For models with reasoning defaults (e.g. gpt-5.6-luna, o-series),
+  // force reasoning_effort to 'none' when tools are present in /v1/chat/completions
+  // to avoid tool-calling incompatibilities and eliminate unnecessary reasoning latency.
+  let useReasoningNone = isReasoningModel(model);
   let res: Response;
+
   try {
     res = await fetch(OPENAI_URL, {
       method: 'POST',
@@ -103,14 +131,43 @@ export async function generateWithToolsOpenAi(
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model,
-        messages: toOpenAiMessages(messages),
-        tools: toOpenAiTools(tools),
-        max_completion_tokens: MAX_OUTPUT_TOKENS,
-      }),
+      body: JSON.stringify(buildBody(useReasoningNone)),
       signal: AbortSignal.timeout(timeoutMs),
     });
+
+    // If sending reasoning_effort caused an error (e.g. unsupported parameter), retry without it
+    if (!res.ok && useReasoningNone) {
+      const cloned = res.clone();
+      const errText = await cloned.text().catch(() => '');
+      if (errText.includes('reasoning_effort')) {
+        useReasoningNone = false;
+        res = await fetch(OPENAI_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(buildBody(false)),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      }
+    } else if (!res.ok && !useReasoningNone) {
+      // Conversely, if the endpoint rejects tools because reasoning_effort was not 'none'
+      const cloned = res.clone();
+      const errText = await cloned.text().catch(() => '');
+      if (errText.includes('reasoning_effort')) {
+        useReasoningNone = true;
+        res = await fetch(OPENAI_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(buildBody(true)),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      }
+    }
   } catch (err) {
     throw toNetworkError(err);
   }
