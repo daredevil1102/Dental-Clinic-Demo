@@ -230,10 +230,8 @@ export class RealWhatsAppService implements DentalWhatsAppService {
     });
 
     // Persist to messages table
-    await this.db.from('messages').insert({
+    const { error: msgErr } = await this.db.from('messages').insert({
       conversation_id: resolved.conversationId,
-      user_id: config.user_id,
-      account_id: params.accountId,
       content_type: 'interactive',
       content_text: params.body,
       sender_type: 'bot',
@@ -247,6 +245,9 @@ export class RealWhatsAppService implements DentalWhatsAppService {
         buttons: params.buttons,
       },
     });
+    if (msgErr) {
+      console.error('[dental] failed to persist outbound message to inbox:', msgErr);
+    }
 
     // Update conversation
     await this.db
@@ -298,16 +299,17 @@ export class RealWhatsAppService implements DentalWhatsAppService {
       text: params.text,
     });
 
-    await this.db.from('messages').insert({
+    const { error: msgErr } = await this.db.from('messages').insert({
       conversation_id: resolved.conversationId,
-      user_id: config.user_id,
-      account_id: params.accountId,
       content_type: 'text',
       content_text: params.text,
       sender_type: 'bot',
       message_id: result.messageId,
       status: 'sent',
     });
+    if (msgErr) {
+      console.error('[dental] failed to persist outbound message to inbox:', msgErr);
+    }
 
     await this.db
       .from('conversations')
@@ -369,10 +371,8 @@ export class RealWhatsAppService implements DentalWhatsAppService {
       sections: params.sections,
     });
 
-    await this.db.from('messages').insert({
+    const { error: msgErr } = await this.db.from('messages').insert({
       conversation_id: resolved.conversationId,
-      user_id: config.user_id,
-      account_id: params.accountId,
       content_type: 'interactive',
       content_text: params.body,
       sender_type: 'bot',
@@ -387,6 +387,9 @@ export class RealWhatsAppService implements DentalWhatsAppService {
         sections: params.sections,
       },
     });
+    if (msgErr) {
+      console.error('[dental] failed to persist outbound message to inbox:', msgErr);
+    }
 
     await this.db
       .from('conversations')
