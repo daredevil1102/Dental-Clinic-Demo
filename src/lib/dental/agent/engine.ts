@@ -79,7 +79,7 @@ export async function runAgentTurn(
     .order('full_name');
 
   // Resolve patient from phone — auto-register if this is a new caller
-  let patient = await (async () => {
+  const patient = await (async () => {
     const { data: existing } = await db
       .from('dental_patients')
       .select('id, full_name')
