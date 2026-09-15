@@ -254,9 +254,20 @@ export async function executeTool(
         toDateDefault.setDate(toDateDefault.getDate() + 6);
         const toDate = (args.to_date as string) ?? getDateInTimezone(toDateDefault, tz);
 
-        const availability = await getAvailableSlots(
-          db, accountId, doctorId, fromDate, toDate, tz, config.default_duration_minutes,
-        );
+        let availability: Awaited<ReturnType<typeof getAvailableSlots>>;
+        try {
+          availability = await getAvailableSlots(
+            db, accountId, doctorId, fromDate, toDate, tz, config.default_duration_minutes,
+          );
+        } catch (availErr) {
+          console.error('[dental agent] get_provider_availability error:', availErr);
+          return errorResult(
+            toolCall,
+            `Could not fetch availability for doctor_id=${doctorId} from ${fromDate} to ${toDate}. ` +
+            `This may be a temporary issue — try again, or try a different date range. ` +
+            `If the doctor_id is wrong, call list_providers first to get valid IDs.`,
+          );
+        }
 
         // Filter to only available slots for a cleaner response
         const summary = availability.map((day) => ({
