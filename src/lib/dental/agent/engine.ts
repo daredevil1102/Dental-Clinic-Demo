@@ -78,13 +78,46 @@ export async function runAgentTurn(
     .eq('is_active', true)
     .order('full_name');
 
-  // Resolve patient from phone
-  const { data: patient } = await db
-    .from('dental_patients')
-    .select('id, full_name')
-    .eq('account_id', accountId)
-    .eq('phone', phone)
-    .maybeSingle();
+  // Resolve patient from phone — auto-register if this is a new caller
+  let patient = await (async () => {
+    const { data: existing } = await db
+      .from('dental_patients')
+      .select('id, full_name')
+      .eq('account_id', accountId)
+      .eq('phone', phone)
+      .maybeSingle();
+
+    if (existing) return existing;
+
+    // New caller — auto-create patient from the WACRM contact record
+    const { data: contact } = await db
+      .from('contacts')
+      .select('id, name, phone')
+      .eq('id', contactId)
+      .maybeSingle();
+
+    const patientName = contact?.name?.trim() || phone;
+
+    const { data: created, error: createErr } = await db
+      .from('dental_patients')
+      .insert({
+        account_id: accountId,
+        user_id: configOwnerUserId,
+        contact_id: contactId,
+        full_name: patientName,
+        phone,
+      })
+      .select('id, full_name')
+      .single();
+
+    if (createErr) {
+      console.error('[dental agent] failed to auto-register patient:', createErr);
+      return null;
+    }
+
+    console.log('[dental agent] auto-registered new patient:', created.id, patientName);
+    return created;
+  })();
 
   const patientId = patient?.id ?? null;
   const patientName = patient?.full_name ?? undefined;
