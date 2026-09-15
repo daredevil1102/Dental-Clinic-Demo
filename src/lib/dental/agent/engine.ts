@@ -166,6 +166,7 @@ export async function runAgentTurn(
   let rounds = 0;
   let finalText = '';
   let handedOff = false;
+  let handoffReason: string | undefined;
   let lastMutationAppointment: DentalAppointment | undefined;
 
   const toolCtx: ToolExecutionContext = {
@@ -190,6 +191,13 @@ export async function runAgentTurn(
         timeoutMs,
       });
 
+      if (process.env.DENTAL_AGENT_DEBUG === 'true') {
+        console.log(`[dental agent][debug] round ${rounds} — conversation ${conversationId}`);
+        console.log('[dental agent][debug] context sent:', JSON.stringify(llmMessages, null, 2));
+        console.log('[dental agent][debug] model text:', result.text);
+        console.log('[dental agent][debug] tool calls:', JSON.stringify(result.toolCalls, null, 2));
+      }
+
       if (result.done || result.toolCalls.length === 0) {
         // Model is done — it responded with text
         finalText = result.text;
@@ -205,13 +213,14 @@ export async function runAgentTurn(
 
       // Execute each tool call
       for (const toolCall of result.toolCalls) {
-        const { result: toolResult, handoff, appointment } = await executeTool(
+        const { result: toolResult, handoff, handoffReason: reason, appointment } = await executeTool(
           toolCall,
           toolCtx,
         );
 
         if (handoff) {
           handedOff = true;
+          handoffReason = reason;
         }
 
         if (appointment) {
@@ -250,7 +259,7 @@ export async function runAgentTurn(
   // 6. Handle handoff
   // -------------------------------------------------------
   if (handedOff) {
-    await performHandoff(db, conversationId, accountId, aiConfig.handoffAgentId, session.messages, session.turn_count);
+    await performHandoff(db, conversationId, accountId, aiConfig.handoffAgentId, session.messages, session.turn_count, handoffReason);
     await completeSession(db, session.id, 'handed_off');
   }
 
@@ -360,6 +369,7 @@ async function performHandoff(
   handoffAgentId: string | null,
   messages: Array<{ role: string; content: string }>,
   replyCount: number,
+  reason?: string,
 ): Promise<void> {
   const lastCustomer = [...messages]
     .reverse()
@@ -370,6 +380,9 @@ async function performHandoff(
     : `after ${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}`;
 
   let summary = `🦷 Dental AI receptionist handed off ${replies}.`;
+  if (reason) {
+    summary += ` Reason: ${reason}`;
+  }
   if (lastCustomer) {
     const quote = lastCustomer.content.trim().length > 160
       ? lastCustomer.content.trim().slice(0, 159) + '…'

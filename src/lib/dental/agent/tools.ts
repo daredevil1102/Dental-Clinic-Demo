@@ -183,7 +183,7 @@ export interface ToolExecutionContext {
 export async function executeTool(
   toolCall: ToolCall,
   ctx: ToolExecutionContext,
-): Promise<{ result: ToolResult; handoff?: boolean; appointment?: DentalAppointment }> {
+): Promise<{ result: ToolResult; handoff?: boolean; handoffReason?: string; appointment?: DentalAppointment }> {
   const { db, accountId, userId, phone, patientId, config } = ctx;
   const args = toolCall.arguments;
   const tz = config.clinic_timezone;
@@ -564,6 +564,7 @@ export async function executeTool(
             }),
           },
           handoff: true,
+          handoffReason: reason,
         };
       }
 

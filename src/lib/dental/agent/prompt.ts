@@ -9,7 +9,6 @@
 
 import type { DentalClinicConfig, DentalAppointment, DentalDoctor } from '../types';
 import { formatInClinicTimezone } from '../config';
-import { HANDOFF_SENTINEL } from '@/lib/ai/defaults';
 
 interface PromptContext {
   config: DentalClinicConfig;
@@ -96,6 +95,12 @@ export function buildDentalAgentPrompt(ctx: PromptContext): string {
     'ALWAYS use tools to get real data — never state availability, times, or provider information from memory. ' +
     'Call get_provider_availability to check real availability before suggesting any time slots to the patient. ' +
     'Call get_my_appointments to see the patient\'s appointments before acting on cancel/reschedule requests.\n\n' +
+    'IMPORTANT: When the patient confirms a slot you previously offered (e.g. says "Yes", "book it", or ' +
+    '"the second one"), and you no longer have the exact ISO datetime from the earlier tool result in your ' +
+    'context, call get_provider_availability AGAIN with the same doctor and date range to re-fetch the precise ' +
+    'slot. Do NOT transfer to a human just because you cannot reconstruct the exact time — re-fetching is ' +
+    'cheap, fast, and also re-validates that the slot is still open. Never hand off a conversation solely ' +
+    'because you lost track of a previously-offered time.\n\n' +
     'When booking:\n' +
     '1. Ask what they need (treatment type / reason for visit)\n' +
     '2. Ask if they have a provider preference (or offer the list)\n' +
