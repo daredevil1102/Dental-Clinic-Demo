@@ -1,8 +1,6 @@
 "use client"
 
 import { useCallback, useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
-import { useAuth } from '@/hooks/use-auth'
 import {
   CalendarDays,
   Clock,
@@ -18,6 +16,7 @@ import {
 import type {
   DentalAppointment,
   DentalDoctor,
+  DentalPatient,
   DentalAppointmentStatus,
 } from '@/lib/dental/types'
 
@@ -96,7 +95,7 @@ function CreateAppointmentDialog({
   onCreated: () => void
 }) {
   const [doctors, setDoctors] = useState<DentalDoctor[]>([])
-  const [patients, setPatients] = useState<any[]>([])
+  const [patients, setPatients] = useState<DentalPatient[]>([])
   const [loading, setLoading] = useState(false)
   const [isNewPatient, setIsNewPatient] = useState(false)
   const [newPatientName, setNewPatientName] = useState('')
@@ -183,7 +182,7 @@ function CreateAppointmentDialog({
       setIsNewPatient(false)
       setNewPatientName('')
       setNewPatientPhone('')
-    } catch (err) {
+    } catch {
       alert('Failed to create appointment')
     } finally {
       setLoading(false)
@@ -237,7 +236,7 @@ function CreateAppointmentDialog({
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
               >
                 <option value="">Select patient...</option>
-                {patients.map((p: any) => (
+                {patients.map((p) => (
                   <option key={p.id} value={p.id}>{p.full_name} — {p.phone}</option>
                 ))}
               </select>
@@ -341,7 +340,6 @@ function CreateAppointmentDialog({
 // -------------------------------------------------------
 
 export default function AppointmentsPage() {
-  const { profile } = useAuth()
   const [appointments, setAppointments] = useState<DentalAppointment[]>([])
   const [loading, setLoading] = useState(true)
   const [count, setCount] = useState(0)

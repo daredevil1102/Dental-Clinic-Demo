@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { listAppointments, createAppointment } from '@/lib/dental/appointment-service';
+import type { DentalAppointmentStatus } from '@/lib/dental/types';
 
 export async function GET(request: Request) {
   const supabase = await createClient();
@@ -19,7 +20,7 @@ export async function GET(request: Request) {
   const result = await listAppointments(supabase, profile.account_id, {
     doctor_id: searchParams.get('doctor_id') ?? undefined,
     patient_id: searchParams.get('patient_id') ?? undefined,
-    status: searchParams.get('status') as any ?? undefined,
+    status: (searchParams.get('status') as DentalAppointmentStatus | null) ?? undefined,
     from_date: searchParams.get('from_date') ?? undefined,
     to_date: searchParams.get('to_date') ?? undefined,
     limit: searchParams.get('limit') ? parseInt(searchParams.get('limit')!) : 50,
